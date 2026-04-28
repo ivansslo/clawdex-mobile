@@ -25,6 +25,7 @@ export function PrivacyScreen({ policyUrl, onOpenDrawer }: PrivacyScreenProps) {
   const { colors } = theme;
   const styles = useMemo(() => createStyles(theme), [theme]);
   const [openingPolicy, setOpeningPolicy] = useState(false);
+  const openPolicyDisabled = !policyUrl || openingPolicy;
 
   const openPolicy = useCallback(async () => {
     if (!policyUrl || openingPolicy) {
@@ -98,16 +99,20 @@ export function PrivacyScreen({ policyUrl, onOpenDrawer }: PrivacyScreenProps) {
               {policyUrl ?? 'Not configured. Set EXPO_PUBLIC_PRIVACY_POLICY_URL.'}
             </Text>
             <Pressable
-              disabled={!policyUrl || openingPolicy}
+              disabled={openPolicyDisabled}
               onPress={() => void openPolicy()}
               style={({ pressed }) => [
                 styles.openBtn,
-                (!policyUrl || openingPolicy) && styles.openBtnDisabled,
+                openPolicyDisabled && styles.openBtnDisabled,
                 pressed && policyUrl && !openingPolicy && styles.openBtnPressed
               ]}
             >
-              <Ionicons name="open-outline" size={16} color={colors.white} />
-              <Text style={styles.openBtnText}>
+              <Ionicons
+                name="open-outline"
+                size={16}
+                color={openPolicyDisabled ? colors.textMuted : colors.accentText}
+              />
+              <Text style={[styles.openBtnText, openPolicyDisabled && styles.openBtnTextDisabled]}>
                 {openingPolicy ? 'Opening...' : 'Open privacy policy'}
               </Text>
             </Pressable>
@@ -199,5 +204,8 @@ const createStyles = (theme: AppTheme) =>
     openBtnText: {
       ...theme.typography.headline,
       color: theme.colors.accentText,
+    },
+    openBtnTextDisabled: {
+      color: theme.colors.textMuted,
     },
   });

@@ -356,6 +356,18 @@ export interface GitHistoryResponse {
   cwd?: string;
 }
 
+export interface GitBranchSummary {
+  name: string;
+  remote: boolean;
+  current: boolean;
+}
+
+export interface GitBranchesResponse {
+  branches: GitBranchSummary[];
+  current?: string | null;
+  cwd?: string;
+}
+
 export interface GitCloneRequest {
   url: string;
   parentPath?: string | null;
@@ -420,6 +432,20 @@ export interface GitCommitResponse {
   stdout: string;
   stderr: string;
   committed: boolean;
+  cwd?: string;
+}
+
+export interface GitSwitchRequest {
+  branch: string;
+  cwd?: string;
+}
+
+export interface GitSwitchResponse {
+  code: number | null;
+  stdout: string;
+  stderr: string;
+  switched: boolean;
+  branch: string;
   cwd?: string;
 }
 

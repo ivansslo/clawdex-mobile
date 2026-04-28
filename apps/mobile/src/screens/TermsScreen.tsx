@@ -25,6 +25,7 @@ export function TermsScreen({ termsUrl, onOpenDrawer }: TermsScreenProps) {
   const { colors } = theme;
   const styles = useMemo(() => createStyles(theme), [theme]);
   const [openingTerms, setOpeningTerms] = useState(false);
+  const openTermsDisabled = !termsUrl || openingTerms;
 
   const openTerms = useCallback(async () => {
     if (!termsUrl || openingTerms) {
@@ -94,16 +95,20 @@ export function TermsScreen({ termsUrl, onOpenDrawer }: TermsScreenProps) {
               {termsUrl ?? 'Not configured. Set EXPO_PUBLIC_TERMS_OF_SERVICE_URL.'}
             </Text>
             <Pressable
-              disabled={!termsUrl || openingTerms}
+              disabled={openTermsDisabled}
               onPress={() => void openTerms()}
               style={({ pressed }) => [
                 styles.openBtn,
-                (!termsUrl || openingTerms) && styles.openBtnDisabled,
+                openTermsDisabled && styles.openBtnDisabled,
                 pressed && termsUrl && !openingTerms && styles.openBtnPressed
               ]}
             >
-              <Ionicons name="open-outline" size={16} color={colors.white} />
-              <Text style={styles.openBtnText}>
+              <Ionicons
+                name="open-outline"
+                size={16}
+                color={openTermsDisabled ? colors.textMuted : colors.accentText}
+              />
+              <Text style={[styles.openBtnText, openTermsDisabled && styles.openBtnTextDisabled]}>
                 {openingTerms ? 'Opening...' : 'Open terms'}
               </Text>
             </Pressable>
@@ -195,5 +200,8 @@ const createStyles = (theme: AppTheme) =>
     openBtnText: {
       ...theme.typography.headline,
       color: theme.colors.accentText,
+    },
+    openBtnTextDisabled: {
+      color: theme.colors.textMuted,
     },
   });

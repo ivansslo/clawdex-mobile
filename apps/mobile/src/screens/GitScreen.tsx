@@ -15,6 +15,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import type { HostBridgeApiClient } from '../api/client';
 import type {
   Chat,
+  GitBranchSummary,
   GitHistoryCommit,
   GitDiffResponse,
   GitStatusFile,
@@ -39,12 +40,16 @@ export function GitScreen({ api, chat, onBack, onChatUpdated }: GitScreenProps) 
   const [status, setStatus] = useState<GitStatusResponse | null>(null);
   const [diff, setDiff] = useState<GitDiffResponse | null>(null);
   const [history, setHistory] = useState<GitHistoryCommit[]>([]);
+  const [branches, setBranches] = useState<GitBranchSummary[]>([]);
+  const [branchDraft, setBranchDraft] = useState('');
+  const [branchPanelOpen, setBranchPanelOpen] = useState(false);
   const [commitMessage, setCommitMessage] = useState('chore: checkpoint');
   const [workspaceDraft, setWorkspaceDraft] = useState(chat.cwd ?? '');
   const [loading, setLoading] = useState(true);
   const [savingWorkspace, setSavingWorkspace] = useState(false);
   const [committing, setCommitting] = useState(false);
   const [pushing, setPushing] = useState(false);
+  const [switchingBranch, setSwitchingBranch] = useState(false);
   const [stagingPath, setStagingPath] = useState<string | null>(null);
   const [unstagingPath, setUnstagingPath] = useState<string | null>(null);
   const [stagingAll, setStagingAll] = useState(false);
@@ -62,6 +67,9 @@ export function GitScreen({ api, chat, onBack, onChatUpdated }: GitScreenProps) 
   useEffect(() => {
     setActiveChat(chat);
     setWorkspaceDraft(chat.cwd ?? '');
+    setBranches([]);
+    setBranchDraft('');
+    setBranchPanelOpen(false);
     setError(null);
   }, [chat]);
 
@@ -81,14 +89,17 @@ export function GitScreen({ api, chat, onBack, onChatUpdated }: GitScreenProps) 
   const refresh = useCallback(async () => {
     try {
       setLoading(true);
-      const [nextStatus, nextDiff, nextHistory] = await Promise.all([
+      const [nextStatus, nextDiff, nextHistory, nextBranches] = await Promise.all([
         api.gitStatus(requestedCwd),
         api.gitDiff(requestedCwd),
         api.gitHistory(requestedCwd, 12),
+        api.gitBranches(requestedCwd).catch(() => null),
       ]);
       setStatus(nextStatus);
       setDiff(nextDiff);
       setHistory(nextHistory.commits);
+      setBranches(nextBranches?.branches ?? []);
+      setBranchDraft(nextBranches?.current ?? nextStatus.branch ?? '');
       setError(null);
     } catch (err) {
       setError((err as Error).message);
@@ -163,6 +174,55 @@ export function GitScreen({ api, chat, onBack, onChatUpdated }: GitScreenProps) 
       setPushing(false);
     }
   }, [api, refresh, requestedCwd]);
+
+  const openBranchPanel = useCallback(() => {
+    setBranchPanelOpen((current) => {
+      const nextOpen = !current;
+      if (nextOpen) {
+        setBranchDraft(status?.branch ?? '');
+        void api
+          .gitBranches(requestedCwd)
+          .then((result) => {
+            setBranches(result.branches);
+            setBranchDraft(result.current ?? status?.branch ?? '');
+          })
+          .catch((err) => {
+            setError((err as Error).message);
+          });
+      }
+      return nextOpen;
+    });
+  }, [api, requestedCwd, status?.branch]);
+
+  const switchBranch = useCallback(
+    async (nextBranch?: string) => {
+      const branch = (nextBranch ?? branchDraft).trim();
+      if (!branch || switchingBranch) {
+        return;
+      }
+
+      try {
+        setSwitchingBranch(true);
+        const result = await api.gitSwitch({
+          branch,
+          cwd: requestedCwd,
+        });
+        if (!result.switched) {
+          setError(result.stderr || result.stdout || `Failed to switch to ${branch}.`);
+        } else {
+          setBranchPanelOpen(false);
+          setBranchDraft(branch);
+          setError(null);
+          await refresh();
+        }
+      } catch (err) {
+        setError((err as Error).message);
+      } finally {
+        setSwitchingBranch(false);
+      }
+    },
+    [api, branchDraft, refresh, requestedCwd, switchingBranch]
+  );
 
   const stageFile = useCallback(
     async (path: string) => {
@@ -335,6 +395,23 @@ export function GitScreen({ api, chat, onBack, onChatUpdated }: GitScreenProps) 
   const canPush = aheadCount > 0;
   const canPublishBranch = !hasUpstream && isPublishableBranch(status?.branch);
   const showPushAction = canPush || canPublishBranch;
+  const commitButtonDisabled = committing || !commitMessage.trim() || !hasStagedFiles;
+  const pushButtonDisabled = pushing || committing || loading;
+  const reviewTitle = status?.clean
+    ? 'Working tree clean'
+    : hasStagedFiles
+      ? 'Ready to commit'
+      : hasChanges
+        ? 'Review and stage'
+        : 'No changes';
+  const reviewDetail = status?.clean
+    ? 'There are no local changes in this workspace.'
+    : hasStagedFiles
+      ? `${String(stagedCount)} staged, ${String(unstagedCount)} unstaged.`
+      : `${String(changedFiles.length)} changed file${
+          changedFiles.length === 1 ? '' : 's'
+        }. Stage the ones you want to commit.`;
+  const reviewHighlights = changedFilesWithStats.slice(0, 3);
   const pushButtonLabel = pushing
     ? canPublishBranch
       ? 'Publishing...'
@@ -342,6 +419,12 @@ export function GitScreen({ api, chat, onBack, onChatUpdated }: GitScreenProps) 
     : canPublishBranch
       ? 'Publish branch'
       : `Push (${aheadCount})`;
+  const branchSwitchDisabled =
+    switchingBranch ||
+    loading ||
+    !branchDraft.trim() ||
+    branchDraft.trim() === (status?.branch ?? '');
+  const branchRows = branches;
   const selectedDiffFile = useMemo(() => {
     if (parsedDiff.files.length === 0) {
       return null;
@@ -528,25 +611,127 @@ export function GitScreen({ api, chat, onBack, onChatUpdated }: GitScreenProps) 
           <>
             <View style={styles.card}>
               <View style={styles.branchHeaderRow}>
-                <View style={styles.branchBadge}>
+                <View style={styles.branchStatusRow}>
+                  <View style={styles.branchBadge}>
+                    <Ionicons
+                      name="git-branch-outline"
+                      size={14}
+                      color={theme.colors.textPrimary}
+                    />
+                    <Text style={styles.branchBadgeText} numberOfLines={1}>
+                      {status?.branch ?? '—'}
+                    </Text>
+                  </View>
+                  <View
+                    style={[
+                      styles.repoStateBadge,
+                      status?.clean ? styles.repoStateBadgeClean : styles.repoStateBadgeDirty,
+                    ]}
+                  >
+                    <Text style={styles.repoStateBadgeText}>
+                      {status?.clean ? 'Clean' : 'Changes'}
+                    </Text>
+                  </View>
+                </View>
+                <Pressable
+                  onPress={openBranchPanel}
+                  style={({ pressed }) => [
+                    styles.branchSwitchToggle,
+                    branchPanelOpen && styles.branchSwitchToggleActive,
+                    pressed && styles.branchSwitchTogglePressed,
+                  ]}
+                >
                   <Ionicons
-                    name="git-branch-outline"
+                    name="swap-horizontal-outline"
                     size={14}
                     color={theme.colors.textPrimary}
                   />
-                  <Text style={styles.branchBadgeText}>{status?.branch ?? '—'}</Text>
-                </View>
-                <View
-                  style={[
-                    styles.repoStateBadge,
-                    status?.clean ? styles.repoStateBadgeClean : styles.repoStateBadgeDirty,
-                  ]}
-                >
-                  <Text style={styles.repoStateBadgeText}>
-                    {status?.clean ? 'Clean' : 'Changes'}
+                  <Text style={styles.branchSwitchToggleText}>
+                    {branchPanelOpen ? 'Close' : 'Change branch'}
                   </Text>
-                </View>
+                </Pressable>
               </View>
+              {branchPanelOpen ? (
+                <View style={styles.branchSwitchPanel}>
+                  <View style={styles.branchPanelHeader}>
+                    <Text style={styles.branchPanelTitle}>Branches</Text>
+                    {branchDraft ? (
+                      <Text style={styles.branchPanelSelected} numberOfLines={1}>
+                        Selected: {branchDraft}
+                      </Text>
+                    ) : null}
+                  </View>
+                  {branchRows.length > 0 ? (
+                    <ScrollView
+                      style={styles.branchList}
+                      showsVerticalScrollIndicator
+                      nestedScrollEnabled
+                      keyboardShouldPersistTaps="handled"
+                      contentContainerStyle={styles.branchListContent}
+                      onTouchStart={disableBodyScroll}
+                      onTouchCancel={enableBodyScroll}
+                      onTouchEnd={enableBodyScroll}
+                      onScrollBeginDrag={disableBodyScroll}
+                      onScrollEndDrag={enableBodyScroll}
+                      onMomentumScrollEnd={enableBodyScroll}
+                    >
+                      {branchRows.map((branch) => {
+                        const selected = branchDraft === branch.name;
+                        const branchMeta = branch.current
+                          ? 'Current branch'
+                          : branch.remote
+                            ? 'Remote'
+                            : 'Local';
+                        return (
+                          <Pressable
+                            key={`${branch.remote ? 'remote' : 'local'}:${branch.name}`}
+                            onPress={() => setBranchDraft(branch.name)}
+                            disabled={switchingBranch}
+                            style={({ pressed }) => [
+                              styles.branchRow,
+                              selected && styles.branchRowSelected,
+                              pressed && styles.branchRowPressed,
+                              switchingBranch && styles.fileActionBtnDisabled,
+                            ]}
+                          >
+                            <View style={styles.branchRowTextBlock}>
+                              <Text style={styles.branchRowName} numberOfLines={1}>
+                                {branch.name}
+                              </Text>
+                              <Text style={styles.branchRowMeta}>{branchMeta}</Text>
+                            </View>
+                            <Ionicons
+                              name={selected ? 'radio-button-on' : 'radio-button-off'}
+                              size={18}
+                              color={selected ? theme.colors.textPrimary : theme.colors.textMuted}
+                            />
+                          </Pressable>
+                        );
+                      })}
+                    </ScrollView>
+                  ) : (
+                    <Text style={styles.emptyFilesText}>No branches found.</Text>
+                  )}
+                  <Pressable
+                    onPress={() => void switchBranch()}
+                    disabled={branchSwitchDisabled}
+                    style={({ pressed }) => [
+                      styles.branchSwitchButton,
+                      pressed && styles.actionBtnPressed,
+                      branchSwitchDisabled && styles.actionBtnDisabled,
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        styles.branchSwitchButtonText,
+                        branchSwitchDisabled && styles.actionBtnTextDisabled,
+                      ]}
+                    >
+                      {switchingBranch ? 'Switching...' : 'Switch'}
+                    </Text>
+                  </Pressable>
+                </View>
+              ) : null}
               <View style={styles.statsGrid}>
                 <View style={styles.statTile}>
                   <Text style={styles.statTileLabel}>Changed</Text>
@@ -606,6 +791,138 @@ export function GitScreen({ api, chat, onBack, onChatUpdated }: GitScreenProps) 
               ) : null}
             </View>
 
+            <View
+              style={[
+                styles.reviewCard,
+                status?.clean ? styles.reviewCardClean : styles.reviewCardDirty,
+              ]}
+            >
+              <View style={styles.reviewHeader}>
+                <View style={styles.reviewIconWrap}>
+                  <Ionicons
+                    name={
+                      status?.clean
+                        ? 'checkmark-circle-outline'
+                        : hasStagedFiles
+                          ? 'checkmark-done-circle-outline'
+                          : 'git-compare-outline'
+                    }
+                    size={18}
+                    color={status?.clean ? theme.colors.statusComplete : theme.colors.textPrimary}
+                  />
+                </View>
+                <View style={styles.reviewCopy}>
+                  <Text style={styles.reviewTitle}>{reviewTitle}</Text>
+                  <Text style={styles.reviewDetail}>{reviewDetail}</Text>
+                </View>
+              </View>
+              {hasChanges ? (
+                <>
+                  <View style={styles.reviewStatsRow}>
+                    <View style={styles.reviewStat}>
+                      <Text style={styles.reviewStatLabel}>Files</Text>
+                      <Text style={styles.reviewStatValue}>{changedFiles.length}</Text>
+                    </View>
+                    <View style={styles.reviewStat}>
+                      <Text style={styles.reviewStatLabel}>Added</Text>
+                      <Text style={[styles.reviewStatValue, styles.fileAdded]}>
+                        +{parsedDiff.totalAdditions}
+                      </Text>
+                    </View>
+                    <View style={styles.reviewStat}>
+                      <Text style={styles.reviewStatLabel}>Removed</Text>
+                      <Text style={[styles.reviewStatValue, styles.fileRemoved]}>
+                        -{parsedDiff.totalDeletions}
+                      </Text>
+                    </View>
+                  </View>
+                  {reviewHighlights.length > 0 ? (
+                    <View style={styles.reviewFiles}>
+                      {reviewHighlights.map((entry) => (
+                        <View key={`${entry.code}:${entry.path}`} style={styles.reviewFileRow}>
+                          <Text style={styles.reviewFileCode}>{formatStatusCode(entry.code)}</Text>
+                          <Text style={styles.reviewFilePath} numberOfLines={1}>
+                            {entry.path}
+                          </Text>
+                          {entry.stats ? (
+                            <Text style={styles.reviewFileStats}>
+                              +{entry.stats.additions} -{entry.stats.deletions}
+                            </Text>
+                          ) : null}
+                        </View>
+                      ))}
+                    </View>
+                  ) : null}
+                  {hasUnstagedFiles || hasStagedFiles ? (
+                    <View style={styles.reviewActionRow}>
+                      {hasUnstagedFiles ? (
+                        <Pressable
+                          onPress={() => void stageAll()}
+                          disabled={
+                            loading ||
+                            committing ||
+                            pushing ||
+                            stagingAll ||
+                            unstagingAll ||
+                            Boolean(stagingPath) ||
+                            Boolean(unstagingPath)
+                          }
+                          style={({ pressed }) => [
+                            styles.bulkActionBtn,
+                            styles.bulkActionBtnStage,
+                            pressed && styles.fileActionBtnPressed,
+                            (loading ||
+                              committing ||
+                              pushing ||
+                              stagingAll ||
+                              unstagingAll ||
+                              Boolean(stagingPath) ||
+                              Boolean(unstagingPath)) &&
+                              styles.fileActionBtnDisabled,
+                          ]}
+                        >
+                          <Text style={styles.bulkActionText}>
+                            {stagingAll ? 'Staging all...' : 'Stage all'}
+                          </Text>
+                        </Pressable>
+                      ) : null}
+                      {hasStagedFiles ? (
+                        <Pressable
+                          onPress={() => void unstageAll()}
+                          disabled={
+                            loading ||
+                            committing ||
+                            pushing ||
+                            unstagingAll ||
+                            stagingAll ||
+                            Boolean(stagingPath) ||
+                            Boolean(unstagingPath)
+                          }
+                          style={({ pressed }) => [
+                            styles.bulkActionBtn,
+                            styles.bulkActionBtnUnstage,
+                            pressed && styles.fileActionBtnPressed,
+                            (loading ||
+                              committing ||
+                              pushing ||
+                              unstagingAll ||
+                              stagingAll ||
+                              Boolean(stagingPath) ||
+                              Boolean(unstagingPath)) &&
+                              styles.fileActionBtnDisabled,
+                          ]}
+                        >
+                          <Text style={styles.bulkActionText}>
+                            {unstagingAll ? 'Unstaging all...' : 'Unstage all'}
+                          </Text>
+                        </Pressable>
+                      ) : null}
+                    </View>
+                  ) : null}
+                </>
+              ) : null}
+            </View>
+
             <Text style={styles.sectionLabel}>Commit message</Text>
             <TextInput
               style={styles.input}
@@ -618,31 +935,44 @@ export function GitScreen({ api, chat, onBack, onChatUpdated }: GitScreenProps) 
 
             <Pressable
               onPress={() => void commit()}
-              disabled={committing || !commitMessage.trim() || !hasChanges}
+              disabled={commitButtonDisabled}
               style={({ pressed }) => [
                 styles.actionBtn,
                 pressed && styles.actionBtnPressed,
-                (committing || !commitMessage.trim() || !hasChanges) &&
-                  styles.actionBtnDisabled,
+                commitButtonDisabled && styles.actionBtnDisabled,
               ]}
             >
-              <Text style={styles.actionBtnText}>
-                {committing ? 'Committing...' : 'Commit'}
+              <Text
+                style={[
+                  styles.actionBtnText,
+                  commitButtonDisabled && styles.actionBtnTextDisabled,
+                ]}
+              >
+                {committing
+                  ? 'Committing...'
+                  : hasStagedFiles
+                    ? 'Commit'
+                    : 'Stage files first'}
               </Text>
             </Pressable>
 
             {showPushAction ? (
               <Pressable
                 onPress={() => void push()}
-                disabled={pushing || committing || loading}
+                disabled={pushButtonDisabled}
                 style={({ pressed }) => [
                   styles.actionBtn,
                   styles.pushBtn,
                   pressed && styles.actionBtnPressed,
-                  (pushing || committing || loading) && styles.actionBtnDisabled,
+                  pushButtonDisabled && styles.actionBtnDisabled,
                 ]}
               >
-                <Text style={styles.actionBtnText}>
+                <Text
+                  style={[
+                    styles.actionBtnText,
+                    pushButtonDisabled && styles.actionBtnTextDisabled,
+                  ]}
+                >
                   {pushButtonLabel}
                 </Text>
               </Pressable>
@@ -1110,10 +1440,115 @@ const createStyles = (theme: AppTheme) => StyleSheet.create({
     backgroundColor: theme.colors.bgItem,
     gap: theme.spacing.sm,
   },
+  reviewCard: {
+    borderRadius: theme.radius.md,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: theme.colors.borderLight,
+    padding: theme.spacing.md,
+    backgroundColor: theme.colors.bgItem,
+    gap: theme.spacing.md,
+  },
+  reviewCardClean: {
+    borderColor: theme.isDark ? 'rgba(52, 199, 89, 0.24)' : 'rgba(22, 163, 74, 0.2)',
+  },
+  reviewCardDirty: {
+    borderColor: theme.isDark ? 'rgba(255, 255, 255, 0.14)' : 'rgba(15, 23, 42, 0.12)',
+  },
+  reviewHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+  },
+  reviewIconWrap: {
+    width: 34,
+    height: 34,
+    borderRadius: theme.radius.full,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: theme.colors.bgInput,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: theme.colors.borderLight,
+  },
+  reviewCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2,
+  },
+  reviewTitle: {
+    ...theme.typography.body,
+    color: theme.colors.textPrimary,
+    fontWeight: '700',
+  },
+  reviewDetail: {
+    ...theme.typography.caption,
+    color: theme.colors.textSecondary,
+  },
+  reviewStatsRow: {
+    flexDirection: 'row',
+    gap: theme.spacing.sm,
+  },
+  reviewStat: {
+    flex: 1,
+    minWidth: 0,
+    borderRadius: theme.radius.sm,
+    backgroundColor: theme.colors.bgInput,
+    paddingHorizontal: theme.spacing.sm,
+    paddingVertical: 7,
+    gap: 2,
+  },
+  reviewStatLabel: {
+    ...theme.typography.caption,
+    color: theme.colors.textMuted,
+    fontSize: 10,
+    lineHeight: 13,
+  },
+  reviewStatValue: {
+    ...theme.typography.body,
+    color: theme.colors.textPrimary,
+    fontWeight: '700',
+  },
+  reviewFiles: {
+    gap: 6,
+  },
+  reviewActionRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: theme.spacing.sm,
+  },
+  reviewFileRow: {
+    minHeight: 26,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+  },
+  reviewFileCode: {
+    ...theme.typography.mono,
+    width: 24,
+    color: theme.colors.textMuted,
+    fontSize: 11,
+  },
+  reviewFilePath: {
+    ...theme.typography.caption,
+    flex: 1,
+    color: theme.colors.textPrimary,
+    fontWeight: '600',
+  },
+  reviewFileStats: {
+    ...theme.typography.mono,
+    color: theme.colors.textMuted,
+    fontSize: 11,
+  },
   branchHeaderRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+    gap: theme.spacing.sm,
+  },
+  branchStatusRow: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
     gap: theme.spacing.sm,
   },
   branchBadge: {
@@ -1133,6 +1568,106 @@ const createStyles = (theme: AppTheme) => StyleSheet.create({
     color: theme.colors.textPrimary,
     fontWeight: '700',
     flexShrink: 1,
+  },
+  branchSwitchToggle: {
+    minHeight: 34,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.xs,
+    borderRadius: theme.radius.full,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: theme.colors.borderLight,
+    backgroundColor: theme.colors.bgInput,
+    paddingHorizontal: theme.spacing.sm,
+    paddingVertical: 7,
+  },
+  branchSwitchToggleActive: {
+    borderColor: theme.colors.borderHighlight,
+    backgroundColor: theme.colors.bgCanvasAccent,
+  },
+  branchSwitchTogglePressed: {
+    opacity: 0.82,
+  },
+  branchSwitchToggleText: {
+    ...theme.typography.caption,
+    color: theme.colors.textPrimary,
+    fontWeight: '700',
+  },
+  branchSwitchPanel: {
+    gap: theme.spacing.sm,
+  },
+  branchPanelHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: theme.spacing.sm,
+  },
+  branchPanelTitle: {
+    ...theme.typography.caption,
+    color: theme.colors.textMuted,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  branchPanelSelected: {
+    ...theme.typography.caption,
+    flex: 1,
+    minWidth: 0,
+    textAlign: 'right',
+    color: theme.colors.textSecondary,
+  },
+  branchSwitchButton: {
+    minHeight: 46,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: theme.radius.md,
+    backgroundColor: theme.colors.accent,
+    paddingHorizontal: theme.spacing.md,
+  },
+  branchSwitchButtonText: {
+    ...theme.typography.headline,
+    color: theme.colors.accentText,
+    fontSize: 14,
+  },
+  branchList: {
+    maxHeight: 260,
+    borderRadius: theme.radius.md,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: theme.colors.borderLight,
+    backgroundColor: theme.colors.bgInput,
+  },
+  branchListContent: {
+    paddingVertical: theme.spacing.xs,
+  },
+  branchRow: {
+    minHeight: 52,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: theme.spacing.sm,
+    paddingHorizontal: theme.spacing.md,
+    paddingVertical: theme.spacing.sm,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: theme.colors.borderLight,
+  },
+  branchRowSelected: {
+    backgroundColor: theme.colors.bgCanvasAccent,
+  },
+  branchRowPressed: {
+    opacity: 0.8,
+  },
+  branchRowTextBlock: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2,
+  },
+  branchRowName: {
+    ...theme.typography.body,
+    color: theme.colors.textPrimary,
+    fontWeight: '600',
+  },
+  branchRowMeta: {
+    ...theme.typography.caption,
+    color: theme.colors.textMuted,
   },
   repoStateBadge: {
     paddingHorizontal: theme.spacing.sm,
@@ -1221,6 +1756,9 @@ const createStyles = (theme: AppTheme) => StyleSheet.create({
     ...theme.typography.headline,
     color: theme.colors.accentText,
     fontSize: 15,
+  },
+  actionBtnTextDisabled: {
+    color: theme.colors.textMuted,
   },
   metaText: {
     ...theme.typography.caption,

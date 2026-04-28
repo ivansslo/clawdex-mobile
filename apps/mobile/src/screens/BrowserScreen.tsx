@@ -137,6 +137,7 @@ export const BrowserScreen = forwardRef<BrowserScreenHandle, BrowserScreenProps>
   const [suggestions, setSuggestions] = useState<BrowserPreviewTargetSuggestion[]>([]);
   const [capabilitiesError, setCapabilitiesError] = useState<string | null>(null);
   const [supportsBrowserPreview, setSupportsBrowserPreview] = useState(true);
+  const submitDisabled = !supportsBrowserPreview || openingPreview;
   const [webReloadKey, setWebReloadKey] = useState(0);
   const [nativeReloadKey, setNativeReloadKey] = useState(0);
   const [bottomBarVisible, setBottomBarVisible] = useState(true);
@@ -962,17 +963,24 @@ export const BrowserScreen = forwardRef<BrowserScreenHandle, BrowserScreenProps>
               ) : null}
               <Pressable
                 onPress={handleSubmitInput}
-                disabled={!supportsBrowserPreview || openingPreview}
+                disabled={submitDisabled}
                 style={({ pressed }) => [
                   styles.submitButton,
-                  (!supportsBrowserPreview || openingPreview) && styles.submitButtonDisabled,
+                  submitDisabled && styles.submitButtonDisabled,
                   pressed && supportsBrowserPreview && !openingPreview && styles.submitButtonPressed,
                 ]}
               >
                 {openingPreview ? (
-                  <ActivityIndicator size="small" color={colors.accentText} />
+                  <ActivityIndicator
+                    size="small"
+                    color={submitDisabled ? colors.textMuted : colors.accentText}
+                  />
                 ) : (
-                  <Ionicons name="arrow-forward" size={16} color={colors.accentText} />
+                  <Ionicons
+                    name="arrow-forward"
+                    size={16}
+                    color={submitDisabled ? colors.textMuted : colors.accentText}
+                  />
                 )}
               </Pressable>
             </View>

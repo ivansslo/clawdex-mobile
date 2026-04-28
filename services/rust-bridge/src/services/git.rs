@@ -1,12 +1,14 @@
 use std::{
+    collections::HashSet,
     path::{Path, PathBuf},
     sync::Arc,
 };
 
 use crate::{
-    normalize_path, BridgeError, GitCloneResponse, GitCommitResponse, GitDiffResponse,
-    GitHistoryCommit, GitHistoryResponse, GitPushResponse, GitStageAllResponse, GitStageResponse,
-    GitStatusEntry, GitStatusResponse, GitUnstageAllResponse, GitUnstageResponse,
+    normalize_path, BridgeError, GitBranchSummary, GitBranchesResponse, GitCloneResponse,
+    GitCommitResponse, GitDiffResponse, GitHistoryCommit, GitHistoryResponse, GitPushResponse,
+    GitStageAllResponse, GitStageResponse, GitStatusEntry, GitStatusResponse, GitSwitchResponse,
+    GitUnstageAllResponse, GitUnstageResponse,
 };
 
 use super::TerminalService;
@@ -234,6 +236,69 @@ impl GitService {
 
         Ok(GitHistoryResponse {
             commits: parse_git_history(&result.stdout),
+            cwd: repo_path.to_string_lossy().to_string(),
+        })
+    }
+
+    pub(crate) async fn get_branches(
+        &self,
+        raw_cwd: Option<&str>,
+    ) -> Result<GitBranchesResponse, BridgeError> {
+        let repo_path = self.resolve_repo_path(raw_cwd)?;
+        let output = self
+            .run_git_stdout(
+                &repo_path,
+                &[
+                    "branch",
+                    "--all",
+                    "--format=%(HEAD)\x1f%(refname)\x1f%(refname:short)",
+                ],
+                "git branch failed",
+            )
+            .await?;
+        let branches = parse_git_branches(&output);
+        let current = branches
+            .iter()
+            .find(|branch| branch.current)
+            .map(|branch| branch.name.clone());
+
+        Ok(GitBranchesResponse {
+            branches,
+            current,
+            cwd: repo_path.to_string_lossy().to_string(),
+        })
+    }
+
+    pub(crate) async fn switch_branch(
+        &self,
+        branch: String,
+        raw_cwd: Option<&str>,
+    ) -> Result<GitSwitchResponse, BridgeError> {
+        let repo_path = self.resolve_repo_path(raw_cwd)?;
+        let target = normalize_git_branch_target(&branch)?;
+        let known_branches = self.get_branches(raw_cwd).await?.branches;
+        let switch_target = resolve_switch_target(&target, &known_branches);
+        let mut args = vec![
+            "-C".to_string(),
+            repo_path.to_string_lossy().to_string(),
+            "switch".to_string(),
+        ];
+        if switch_target.track_remote {
+            args.push("--track".to_string());
+        }
+        args.push(switch_target.name);
+
+        let result = self
+            .terminal
+            .execute_binary("git", &args, repo_path.clone(), None)
+            .await?;
+
+        Ok(GitSwitchResponse {
+            code: result.code,
+            stdout: result.stdout,
+            stderr: result.stderr,
+            switched: result.code == Some(0),
+            branch: target,
             cwd: repo_path.to_string_lossy().to_string(),
         })
     }
@@ -682,6 +747,123 @@ fn parse_git_history(raw: &str) -> Vec<GitHistoryCommit> {
         .collect()
 }
 
+fn parse_git_branches(raw: &str) -> Vec<GitBranchSummary> {
+    let mut seen = HashSet::new();
+    let mut branches = Vec::new();
+
+    for line in raw.lines() {
+        let mut parts = line.splitn(3, '\x1f');
+        let head_marker = parts.next().unwrap_or_default().trim();
+        let full_ref = parts.next().unwrap_or_default().trim();
+        let Some(raw_name) = parts.next() else {
+            continue;
+        };
+        let mut name = raw_name.trim().to_string();
+        if name.is_empty() || name == "HEAD" || name.contains("HEAD ->") {
+            continue;
+        }
+        if let Some(stripped) = name.strip_prefix("remotes/") {
+            name = stripped.to_string();
+        }
+        let remote = full_ref.starts_with("refs/remotes/");
+        if name.ends_with("/HEAD") || !seen.insert(name.clone()) {
+            continue;
+        }
+
+        branches.push(GitBranchSummary {
+            remote,
+            current: head_marker == "*",
+            name,
+        });
+    }
+
+    branches.sort_by(|left, right| {
+        right
+            .current
+            .cmp(&left.current)
+            .then_with(|| left.remote.cmp(&right.remote))
+            .then_with(|| left.name.cmp(&right.name))
+    });
+    branches
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GitSwitchTarget {
+    name: String,
+    track_remote: bool,
+}
+
+fn resolve_switch_target(target: &str, branches: &[GitBranchSummary]) -> GitSwitchTarget {
+    let local_match = branches
+        .iter()
+        .find(|branch| !branch.remote && branch.name == target);
+    if let Some(branch) = local_match {
+        return GitSwitchTarget {
+            name: branch.name.clone(),
+            track_remote: false,
+        };
+    }
+
+    let remote_match = branches.iter().find(|branch| {
+        branch.remote
+            && (branch.name == target
+                || branch_remote_name(&branch.name)
+                    .map(|local_name| local_name == target)
+                    .unwrap_or(false))
+    });
+
+    if let Some(remote_branch) = remote_match {
+        if let Some(local_name) = branch_remote_name(&remote_branch.name) {
+            if branches
+                .iter()
+                .any(|branch| !branch.remote && branch.name == local_name)
+            {
+                return GitSwitchTarget {
+                    name: local_name.to_string(),
+                    track_remote: false,
+                };
+            }
+        }
+
+        return GitSwitchTarget {
+            name: remote_branch.name.clone(),
+            track_remote: true,
+        };
+    }
+
+    GitSwitchTarget {
+        name: target.to_string(),
+        track_remote: false,
+    }
+}
+
+fn branch_remote_name(name: &str) -> Option<&str> {
+    let (remote, local_name) = name.split_once('/')?;
+    if remote.is_empty() || local_name.is_empty() {
+        return None;
+    }
+    Some(local_name)
+}
+
+fn normalize_git_branch_target(raw_branch: &str) -> Result<String, BridgeError> {
+    let target = raw_branch.trim();
+    if target.is_empty() {
+        return Err(BridgeError::invalid_params("branch must not be empty"));
+    }
+    if target.starts_with('-') {
+        return Err(BridgeError::invalid_params(
+            "branch must not start with a dash",
+        ));
+    }
+    if target.contains('\0') || target.contains('\n') || target.contains('\r') {
+        return Err(BridgeError::invalid_params(
+            "branch contains invalid characters",
+        ));
+    }
+
+    Ok(target.to_string())
+}
+
 fn select_default_remote_name(raw: &str) -> Option<String> {
     let remotes = raw
         .lines()
@@ -797,10 +979,12 @@ fn resolve_clone_directory_name(raw_name: &str) -> Result<String, BridgeError> {
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_git_history, parse_porcelain_status_entries, parse_status_has_upstream,
-        resolve_clone_directory_name, resolve_git_cwd, resolve_repo_relative_path,
-        select_default_remote_name,
+        normalize_git_branch_target, parse_git_branches, parse_git_history,
+        parse_porcelain_status_entries, parse_status_has_upstream, resolve_clone_directory_name,
+        resolve_git_cwd, resolve_repo_relative_path, resolve_switch_target,
+        select_default_remote_name, GitSwitchTarget,
     };
+    use crate::GitBranchSummary;
     use std::path::{Path, PathBuf};
 
     #[test]
@@ -934,5 +1118,75 @@ mod tests {
         );
         assert_eq!(commits[1].subject, "Previous commit");
         assert!(!commits[1].is_head);
+    }
+
+    #[test]
+    fn parses_local_and_remote_git_branches() {
+        let raw = concat!(
+            "*\x1frefs/heads/feature/local\x1ffeature/local\n",
+            " \x1frefs/heads/main\x1fmain\n",
+            " \x1frefs/remotes/origin/HEAD\x1forigin/HEAD\n",
+            " \x1frefs/remotes/origin/feature/remote\x1forigin/feature/remote\n",
+            " \x1frefs/remotes/origin/main\x1forigin/main\n",
+        );
+
+        let branches = parse_git_branches(raw);
+        assert_eq!(branches[0].name, "feature/local");
+        assert!(branches[0].current);
+        assert!(!branches[0].remote);
+        assert!(branches
+            .iter()
+            .any(|branch| branch.name == "origin/main" && branch.remote));
+        assert!(!branches.iter().any(|branch| branch.name == "origin/HEAD"));
+    }
+
+    #[test]
+    fn resolves_remote_branch_switch_targets() {
+        let branches = vec![
+            GitBranchSummary {
+                name: "main".to_string(),
+                remote: false,
+                current: true,
+            },
+            GitBranchSummary {
+                name: "origin/main".to_string(),
+                remote: true,
+                current: false,
+            },
+            GitBranchSummary {
+                name: "origin/feature/remote".to_string(),
+                remote: true,
+                current: false,
+            },
+        ];
+
+        assert_eq!(
+            resolve_switch_target("main", &branches),
+            GitSwitchTarget {
+                name: "main".to_string(),
+                track_remote: false,
+            }
+        );
+        assert_eq!(
+            resolve_switch_target("feature/remote", &branches),
+            GitSwitchTarget {
+                name: "origin/feature/remote".to_string(),
+                track_remote: true,
+            }
+        );
+        assert_eq!(
+            resolve_switch_target("origin/main", &branches),
+            GitSwitchTarget {
+                name: "main".to_string(),
+                track_remote: false,
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_git_switch_option_like_branch_names() {
+        assert!(normalize_git_branch_target("feature/test").is_ok());
+        let error = normalize_git_branch_target("--detach").expect_err("reject option-like name");
+        assert_eq!(error.code, -32602);
     }
 }

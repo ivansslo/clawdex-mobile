@@ -71,6 +71,7 @@ export function TerminalScreen({ api, ws, onOpenDrawer }: TerminalScreenProps) {
       }
     ]);
   }, [command, executeCommand, running]);
+  const runDisabled = running || !command.trim();
 
   useEffect(() => {
     return ws.onEvent((event) => {
@@ -139,14 +140,18 @@ export function TerminalScreen({ api, ws, onOpenDrawer }: TerminalScreenProps) {
           />
           <Pressable
             onPress={runCommand}
-            disabled={running || !command.trim()}
+            disabled={runDisabled}
             style={({ pressed }) => [
               styles.runBtn,
-              pressed && styles.runBtnPressed,
-              running && styles.runBtnDisabled,
+              pressed && !runDisabled && styles.runBtnPressed,
+              runDisabled && styles.runBtnDisabled,
             ]}
           >
-            <Ionicons name={running ? 'pause' : 'play'} size={14} color={theme.colors.accentText} />
+            <Ionicons
+              name={running ? 'pause' : 'play'}
+              size={14}
+              color={runDisabled ? theme.colors.textMuted : theme.colors.accentText}
+            />
           </Pressable>
         </View>
       </KeyboardAvoidingView>

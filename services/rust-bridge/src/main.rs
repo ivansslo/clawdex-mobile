@@ -5588,6 +5588,22 @@ struct GitHistoryResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct GitBranchSummary {
+    name: String,
+    remote: bool,
+    current: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GitBranchesResponse {
+    branches: Vec<GitBranchSummary>,
+    current: Option<String>,
+    cwd: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct GitCloneResponse {
     code: Option<i32>,
     stdout: String,
@@ -5645,6 +5661,17 @@ struct GitCommitResponse {
     stdout: String,
     stderr: String,
     committed: bool,
+    cwd: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GitSwitchResponse {
+    code: Option<i32>,
+    stdout: String,
+    stderr: String,
+    switched: bool,
+    branch: String,
     cwd: String,
 }
 
@@ -5737,6 +5764,13 @@ struct ThreadListStreamCancelRequest {
 #[serde(rename_all = "camelCase")]
 struct GitCommitRequest {
     message: String,
+    cwd: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GitSwitchRequest {
+    branch: String,
     cwd: Option<String>,
 }
 
@@ -7116,6 +7150,13 @@ async fn handle_bridge_method(
                 .await?;
             serde_json::to_value(history).map_err(|error| BridgeError::server(&error.to_string()))
         }
+        "bridge/git/branches" => {
+            let request: GitQueryRequest =
+                serde_json::from_value(params.unwrap_or_else(|| json!({})))
+                    .map_err(|error| BridgeError::invalid_params(&error.to_string()))?;
+            let branches = state.git.get_branches(request.cwd.as_deref()).await?;
+            serde_json::to_value(branches).map_err(|error| BridgeError::server(&error.to_string()))
+        }
         "bridge/git/clone" => {
             let request: GitCloneRequest =
                 serde_json::from_value(params.unwrap_or_else(|| json!({})))
@@ -7263,6 +7304,33 @@ async fn handle_bridge_method(
             }
 
             Ok(commit_value)
+        }
+        "bridge/git/switch" => {
+            let request: GitSwitchRequest =
+                serde_json::from_value(params.unwrap_or_else(|| json!({})))
+                    .map_err(|error| BridgeError::invalid_params(&error.to_string()))?;
+            let GitSwitchRequest { branch, cwd } = request;
+
+            if branch.trim().is_empty() {
+                return Err(BridgeError::invalid_params("branch must not be empty"));
+            }
+
+            let switched = state.git.switch_branch(branch, cwd.as_deref()).await?;
+            let switched_value = serde_json::to_value(&switched)
+                .map_err(|error| BridgeError::server(&error.to_string()))?;
+
+            if switched.switched {
+                if let Ok(status) = state.git.get_status(cwd.as_deref()).await {
+                    let status_value = serde_json::to_value(status)
+                        .map_err(|error| BridgeError::server(&error.to_string()))?;
+                    state
+                        .hub
+                        .broadcast_notification("bridge/git/updated", status_value)
+                        .await;
+                }
+            }
+
+            Ok(switched_value)
         }
         "bridge/git/push" => {
             let request: GitQueryRequest =

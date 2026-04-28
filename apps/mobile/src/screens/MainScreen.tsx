@@ -237,6 +237,9 @@ const LARGE_CHAT_MESSAGE_COUNT_THRESHOLD = 120;
 const CHAT_INITIAL_VISIBLE_MESSAGE_WINDOW = 80;
 const CHAT_MESSAGE_PAGE_SIZE = 80;
 const CHAT_AUTO_LOAD_OLDER_TOP_THRESHOLD_PX = 96;
+const WORKSPACE_FAVORITES_FILE = 'clawdex-workspace-favorites.json';
+const WORKSPACE_FAVORITES_VERSION = 1;
+const WORKSPACE_FAVORITES_LIMIT = 4;
 const LIKELY_RUNNING_RECENT_UPDATE_MS = 30_000;
 const UNANSWERED_USER_RUNNING_TTL_MS = 90_000;
 const ACTIVE_CHAT_SYNC_INTERVAL_MS = 2_000;
@@ -613,6 +616,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
     const [workspaceBrowseError, setWorkspaceBrowseError] = useState<string | null>(null);
     const workspaceBrowseCacheRef = useRef<Record<string, FileSystemListResponse>>({});
     const workspaceBrowseRequestRef = useRef(0);
+    const [favoriteWorkspacePaths, setFavoriteWorkspacePaths] = useState<string[]>([]);
     const [resumeGitCheckoutAfterWorkspacePicker, setResumeGitCheckoutAfterWorkspacePicker] =
       useState(false);
     const [gitCheckoutModalVisible, setGitCheckoutModalVisible] = useState(false);
@@ -1368,6 +1372,73 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
         }
       },
       []
+    );
+
+    const saveWorkspaceFavorites = useCallback(async (paths: string[]) => {
+      const favoritesPath = getWorkspaceFavoritesPath();
+      if (!favoritesPath) {
+        return;
+      }
+
+      const payload = JSON.stringify({
+        version: WORKSPACE_FAVORITES_VERSION,
+        paths,
+      });
+
+      try {
+        await FileSystem.writeAsStringAsync(favoritesPath, payload);
+      } catch {
+        // Best effort persistence only.
+      }
+    }, []);
+
+    useEffect(() => {
+      let cancelled = false;
+
+      const load = async () => {
+        const favoritesPath = getWorkspaceFavoritesPath();
+        if (!favoritesPath) {
+          return;
+        }
+
+        try {
+          const raw = await FileSystem.readAsStringAsync(favoritesPath);
+          if (!cancelled) {
+            setFavoriteWorkspacePaths(parseWorkspaceFavoritePaths(raw));
+          }
+        } catch {
+          if (!cancelled) {
+            setFavoriteWorkspacePaths([]);
+          }
+        }
+      };
+
+      void load();
+      return () => {
+        cancelled = true;
+      };
+    }, []);
+
+    const toggleWorkspaceFavorite = useCallback(
+      (path: string | null | undefined) => {
+        const normalizedPath = normalizeWorkspacePath(path);
+        if (!normalizedPath) {
+          return;
+        }
+
+        setFavoriteWorkspacePaths((current) => {
+          const exists = current.includes(normalizedPath);
+          const next = exists
+            ? current.filter((entry) => entry !== normalizedPath)
+            : [
+                normalizedPath,
+                ...current.filter((entry) => entry !== normalizedPath),
+              ].slice(0, WORKSPACE_FAVORITES_LIMIT);
+          void saveWorkspaceFavorites(next);
+          return next;
+        });
+      },
+      [saveWorkspaceFavorites]
     );
 
     useEffect(() => {
@@ -8449,6 +8520,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
           }
           bridgeRoot={workspaceBridgeRoot}
           recentWorkspaces={workspaceRoots}
+          favoriteWorkspacePaths={favoriteWorkspacePaths}
           currentPath={workspaceBrowsePath}
           parentPath={workspaceBrowseParentPath}
           entries={workspaceBrowseEntries}
@@ -8457,6 +8529,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
           error={workspaceBrowseError}
           onBrowsePath={(path) => void browseWorkspacePath(path)}
           onSelectPath={handleWorkspaceSelection}
+          onToggleFavorite={toggleWorkspaceFavorite}
           actionLabel={
             workspacePickerPurpose === 'default-start' ? 'Clone Repo' : null
           }
@@ -11030,6 +11103,45 @@ function getChatPlanSnapshotsPath(): string | null {
   }
 
   return `${base}${CHAT_PLAN_SNAPSHOTS_FILE}`;
+}
+
+function getWorkspaceFavoritesPath(): string | null {
+  const base = FileSystem.documentDirectory;
+  if (typeof base !== 'string' || base.trim().length === 0) {
+    return null;
+  }
+
+  return `${base}${WORKSPACE_FAVORITES_FILE}`;
+}
+
+function parseWorkspaceFavoritePaths(raw: string): string[] {
+  if (typeof raw !== 'string' || raw.trim().length === 0) {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(raw);
+    const parsedRecord = toRecord(parsed);
+    if (!parsedRecord || parsedRecord.version !== WORKSPACE_FAVORITES_VERSION) {
+      return [];
+    }
+
+    const paths = Array.isArray(parsedRecord.paths) ? parsedRecord.paths : [];
+    const normalizedPaths: string[] = [];
+    for (const path of paths) {
+      const normalizedPath = normalizeWorkspacePath(path);
+      if (!normalizedPath || normalizedPaths.includes(normalizedPath)) {
+        continue;
+      }
+      normalizedPaths.push(normalizedPath);
+      if (normalizedPaths.length >= WORKSPACE_FAVORITES_LIMIT) {
+        break;
+      }
+    }
+    return normalizedPaths;
+  } catch {
+    return [];
+  }
 }
 
 function parseChatDrafts(raw: string): Record<string, string> {

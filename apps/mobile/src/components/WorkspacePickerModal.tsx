@@ -21,6 +21,7 @@ interface WorkspacePickerModalProps {
   selectedPath?: string | null;
   bridgeRoot?: string | null;
   recentWorkspaces: WorkspaceSummary[];
+  favoriteWorkspacePaths?: string[];
   currentPath?: string | null;
   parentPath?: string | null;
   entries: FileSystemEntry[];
@@ -29,6 +30,7 @@ interface WorkspacePickerModalProps {
   error?: string | null;
   onBrowsePath: (path: string | null) => void;
   onSelectPath: (path: string | null) => void;
+  onToggleFavorite?: (path: string | null) => void;
   actionLabel?: string | null;
   actionDescription?: string | null;
   actionDisabled?: boolean;
@@ -37,12 +39,14 @@ interface WorkspacePickerModalProps {
 }
 
 const ENTRY_ROW_HEIGHT = 58;
+type IoniconName = keyof typeof Ionicons.glyphMap;
 
 export function WorkspacePickerModal({
   visible,
   selectedPath = null,
   bridgeRoot = null,
   recentWorkspaces,
+  favoriteWorkspacePaths = [],
   currentPath = null,
   parentPath = null,
   entries,
@@ -51,6 +55,7 @@ export function WorkspacePickerModal({
   error = null,
   onBrowsePath,
   onSelectPath,
+  onToggleFavorite,
   actionLabel = null,
   actionDescription = null,
   actionDisabled = false,
@@ -86,8 +91,26 @@ export function WorkspacePickerModal({
   }, [bridgeRoot, currentPath, selectedPath, visible]);
 
   const normalizedSearch = searchQuery.trim().toLowerCase();
-  const filteredRecentWorkspaces = recentWorkspaces.filter((workspace) =>
-    matchesSearch([workspace.path, toPathBasename(workspace.path)], normalizedSearch)
+  const favoritePathSet = useMemo(
+    () => new Set(favoriteWorkspacePaths),
+    [favoriteWorkspacePaths]
+  );
+  const recentWorkspaceByPath = useMemo(() => {
+    const map = new Map<string, WorkspaceSummary>();
+    for (const workspace of recentWorkspaces) {
+      map.set(workspace.path, workspace);
+    }
+    return map;
+  }, [recentWorkspaces]);
+  const favoriteWorkspaces = favoriteWorkspacePaths
+    .map((path) => recentWorkspaceByPath.get(path) ?? { path, chatCount: 0 })
+    .filter((workspace) =>
+      matchesSearch([workspace.path, toPathBasename(workspace.path)], normalizedSearch)
+    );
+  const filteredRecentWorkspaces = recentWorkspaces.filter(
+    (workspace) =>
+      !favoritePathSet.has(workspace.path) &&
+      matchesSearch([workspace.path, toPathBasename(workspace.path)], normalizedSearch)
   );
   const filteredEntries = entries.filter((entry) =>
     matchesSearch([entry.name, entry.path], normalizedSearch)
@@ -95,9 +118,12 @@ export function WorkspacePickerModal({
   const footerPath = pendingSelectionPath ?? currentPath ?? bridgeRoot ?? null;
   const footerTitle = footerPath ? toPathBasename(footerPath) : 'Default workspace';
   const footerSubtitle = footerPath ?? 'Bridge default workspace';
+  const footerIsFavorite = footerPath ? favoritePathSet.has(footerPath) : false;
   const currentFolderPath = currentPath ?? bridgeRoot ?? null;
   const currentFolderTitle = currentFolderPath ? toPathBasename(currentFolderPath) : 'Loading';
+  const hasFavoriteWorkspaces = favoriteWorkspaces.length > 0;
   const hasRecentWorkspaces = filteredRecentWorkspaces.length > 0;
+  const compactFavoriteWorkspaces = favoriteWorkspaces.slice(0, 4);
   const compactRecentWorkspaces = filteredRecentWorkspaces.slice(0, 2);
   const hasVisibleEntries = filteredEntries.length > 0;
   const refreshingRecent = loadingRecent && hasRecentWorkspaces;
@@ -205,6 +231,26 @@ export function WorkspacePickerModal({
                 </Pressable>
               ) : null}
 
+              {hasFavoriteWorkspaces ? (
+                <>
+                  <View style={styles.sectionHeader}>
+                    <Text style={styles.sectionTitle}>Pinned</Text>
+                  </View>
+
+                  <View style={styles.favoriteGrid}>
+                    {compactFavoriteWorkspaces.map((workspace) => (
+                      <WorkspaceTile
+                        key={workspace.path}
+                        workspace={workspace}
+                        iconName="star"
+                        selected={workspace.path === pendingSelectionPath}
+                        onPress={() => handleBrowsePath(workspace.path)}
+                      />
+                    ))}
+                  </View>
+                </>
+              ) : null}
+
               <View style={styles.sectionHeader}>
                 <Text style={styles.sectionTitle}>Recent</Text>
                 {refreshingRecent ? (
@@ -219,32 +265,13 @@ export function WorkspacePickerModal({
                 {hasRecentWorkspaces ? (
                   <View style={styles.recentTileRow}>
                     {compactRecentWorkspaces.map((workspace) => (
-                      <Pressable
+                      <WorkspaceTile
                         key={workspace.path}
+                        workspace={workspace}
+                        iconName="time-outline"
+                        selected={workspace.path === pendingSelectionPath}
                         onPress={() => handleBrowsePath(workspace.path)}
-                        style={[
-                          styles.recentTile,
-                          workspace.path === pendingSelectionPath && styles.recentTileSelected,
-                        ]}
-                      >
-                        {({ pressed }) => (
-                          <View style={[styles.recentTileContent, pressed && styles.pressed]}>
-                            <View style={styles.recentTileHeader}>
-                              <Ionicons
-                                name="time-outline"
-                                size={13}
-                                color={theme.colors.textSecondary}
-                              />
-                              <Text style={styles.recentMeta} numberOfLines={1}>
-                                {formatWorkspaceMeta(workspace)}
-                              </Text>
-                            </View>
-                            <Text style={styles.recentTitle} numberOfLines={1}>
-                              {toPathBasename(workspace.path)}
-                            </Text>
-                          </View>
-                        )}
-                      </Pressable>
+                      />
                     ))}
                   </View>
                 ) : loadingRecent ? (
@@ -365,6 +392,24 @@ export function WorkspacePickerModal({
                   </Text>
                 </View>
                 <Pressable
+                  onPress={() => footerPath && onToggleFavorite?.(footerPath)}
+                  disabled={!footerPath || !onToggleFavorite}
+                  style={({ pressed }) => [
+                    styles.footerFavoriteButton,
+                    footerIsFavorite && styles.footerFavoriteButtonActive,
+                    (!footerPath || !onToggleFavorite) && styles.buttonDisabled,
+                    pressed && footerPath && onToggleFavorite && styles.footerFavoriteButtonPressed,
+                  ]}
+                >
+                  <Ionicons
+                    name={footerIsFavorite ? 'star' : 'star-outline'}
+                    size={17}
+                    color={
+                      footerIsFavorite ? theme.colors.textPrimary : theme.colors.textSecondary
+                    }
+                  />
+                </Pressable>
+                <Pressable
                   onPress={() => footerPath && onSelectPath(footerPath)}
                   disabled={!footerPath}
                   style={({ pressed }) => [
@@ -383,6 +428,49 @@ export function WorkspacePickerModal({
         </View>
       </View>
     </Modal>
+  );
+}
+
+function WorkspaceTile({
+  workspace,
+  iconName,
+  selected,
+  onPress,
+}: {
+  workspace: WorkspaceSummary;
+  iconName: IoniconName;
+  selected: boolean;
+  onPress: () => void;
+}) {
+  const theme = useAppTheme();
+  const styles = useMemo(() => createStyles(theme), [theme]);
+
+  return (
+    <Pressable
+      onPress={onPress}
+      style={[
+        styles.workspaceTile,
+        selected && styles.workspaceTileSelected,
+      ]}
+    >
+      {({ pressed }) => (
+        <View style={[styles.workspaceTileContent, pressed && styles.pressed]}>
+          <View style={styles.workspaceTileHeader}>
+            <Ionicons
+              name={iconName}
+              size={13}
+              color={theme.colors.textSecondary}
+            />
+            <Text style={styles.workspaceTileMeta} numberOfLines={1}>
+              {formatWorkspaceMeta(workspace)}
+            </Text>
+          </View>
+          <Text style={styles.workspaceTileTitle} numberOfLines={1}>
+            {toPathBasename(workspace.path)}
+          </Text>
+        </View>
+      )}
+    </Pressable>
   );
 }
 
@@ -700,6 +788,11 @@ const createStyles = (theme: AppTheme) => {
   recentCard: {
     height: 56,
   },
+  favoriteGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: theme.spacing.sm,
+  },
   recentTileRow: {
     flexDirection: 'row',
     gap: theme.spacing.sm,
@@ -711,8 +804,9 @@ const createStyles = (theme: AppTheme) => {
     alignItems: 'center',
     gap: theme.spacing.sm,
   },
-  recentTile: {
-    flex: 1,
+  workspaceTile: {
+    flexGrow: 1,
+    flexBasis: '48%',
     minWidth: 0,
     minHeight: 56,
     borderRadius: theme.radius.lg,
@@ -721,29 +815,29 @@ const createStyles = (theme: AppTheme) => {
     backgroundColor: theme.colors.bgItem,
     overflow: 'hidden',
   },
-  recentTileSelected: {
+  workspaceTileSelected: {
     borderColor: theme.colors.borderHighlight,
     backgroundColor: theme.colors.bgInput,
   },
-  recentTileContent: {
+  workspaceTileContent: {
     flex: 1,
     paddingHorizontal: theme.spacing.sm,
     paddingVertical: 7,
     gap: 1,
     justifyContent: 'center',
   },
-  recentTileHeader: {
+  workspaceTileHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 5,
   },
-  recentTitle: {
+  workspaceTileTitle: {
     ...theme.typography.body,
     fontSize: 12,
     lineHeight: 16,
     fontWeight: '600',
   },
-  recentMeta: {
+  workspaceTileMeta: {
     ...theme.typography.caption,
     fontSize: 10,
     lineHeight: 13,
@@ -853,6 +947,23 @@ const createStyles = (theme: AppTheme) => {
     fontSize: 10,
     lineHeight: 14,
     color: theme.colors.textMuted,
+  },
+  footerFavoriteButton: {
+    width: 44,
+    minHeight: 48,
+    borderRadius: theme.radius.full,
+    borderWidth: 1,
+    borderColor: theme.colors.borderLight,
+    backgroundColor: theme.colors.bgItem,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  footerFavoriteButtonActive: {
+    borderColor: theme.colors.borderHighlight,
+    backgroundColor: theme.colors.bgInput,
+  },
+  footerFavoriteButtonPressed: {
+    opacity: 0.84,
   },
   footerUseButton: {
     width: 94,

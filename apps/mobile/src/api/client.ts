@@ -28,6 +28,7 @@ import type {
   CreateChatRequest,
   Chat,
   ChatSummary,
+  GitBranchesResponse,
   GitCloneRequest,
   GitCloneResponse,
   GitCommitRequest,
@@ -41,6 +42,8 @@ import type {
   GitStageAllResponse,
   GitStageResponse,
   GitStatusResponse,
+  GitSwitchRequest,
+  GitSwitchResponse,
   GitUnstageAllResponse,
   GitUnstageResponse,
   PendingApproval,
@@ -1480,6 +1483,13 @@ export class HostBridgeApiClient {
     });
   }
 
+  gitBranches(cwd?: string): Promise<GitBranchesResponse> {
+    const normalizedCwd = normalizeCwd(cwd);
+    return this.ws.request<GitBranchesResponse>('bridge/git/branches', {
+      cwd: normalizedCwd ?? null,
+    });
+  }
+
   gitClone(body: GitCloneRequest): Promise<GitCloneResponse> {
     const url = body.url.trim();
     const directoryName = body.directoryName.trim();
@@ -1538,6 +1548,18 @@ export class HostBridgeApiClient {
   gitCommit(body: GitCommitRequest): Promise<GitCommitResponse> {
     return this.ws.request<GitCommitResponse>('bridge/git/commit', {
       ...body,
+      cwd: normalizeCwd(body.cwd) ?? null,
+    });
+  }
+
+  gitSwitch(body: GitSwitchRequest): Promise<GitSwitchResponse> {
+    const branch = body.branch.trim();
+    if (!branch) {
+      return Promise.reject(new Error('branch must not be empty'));
+    }
+
+    return this.ws.request<GitSwitchResponse>('bridge/git/switch', {
+      branch,
       cwd: normalizeCwd(body.cwd) ?? null,
     });
   }
