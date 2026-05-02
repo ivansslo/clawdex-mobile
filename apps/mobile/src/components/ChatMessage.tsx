@@ -1,5 +1,5 @@
 import { Ionicons } from '@expo/vector-icons';
-import { memo, useEffect, useMemo, useState, type ReactElement } from 'react';
+import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
 import {
   Image,
   Modal,
@@ -45,6 +45,8 @@ interface ToolActivityGroupProps {
   engine?: ChatEngine | null;
   bridgeUrl?: string | null;
   bridgeToken?: string | null;
+  /** While the server reports an in-flight turn, surface live affordances (badge, auto-expand). */
+  liveTurnActive?: boolean;
 }
 
 interface TimelineEntry {
@@ -572,11 +574,16 @@ export const ToolActivityGroup = memo(function ToolActivityGroupComponent({
   engine = null,
   bridgeUrl = null,
   bridgeToken = null,
+  liveTurnActive = false,
 }: ToolActivityGroupProps) {
   const theme = useAppTheme();
   const styles = useMemo(() => createStyles(theme), [theme]);
   const [expanded, setExpanded] = useState(false);
   const [expandedEntryIds, setExpandedEntryIds] = useState<Record<string, boolean>>({});
+  const prevLiveSignatureRef = useRef<string | null>(null);
+  const sawLiveMountRef = useRef(false);
+  const userCollapsedLiveRef = useRef(false);
+
   const entries = useMemo(() => {
     const flattened: ToolGroupEntry[] = [];
     for (const message of messages) {
@@ -600,6 +607,44 @@ export const ToolActivityGroup = memo(function ToolActivityGroupComponent({
     }
     return flattened.filter((entry) => entry.title.length > 0);
   }, [messages]);
+
+  const entriesSignature = useMemo(
+    () => entries.map((e) => `${e.id}:${e.title}`).join('\u241f'),
+    [entries]
+  );
+
+  useEffect(() => {
+    if (!liveTurnActive) {
+      prevLiveSignatureRef.current = entriesSignature;
+      sawLiveMountRef.current = false;
+      userCollapsedLiveRef.current = false;
+      return;
+    }
+
+    if (!sawLiveMountRef.current) {
+      sawLiveMountRef.current = true;
+      prevLiveSignatureRef.current = entriesSignature;
+      return;
+    }
+
+    if (
+      entriesSignature !== prevLiveSignatureRef.current &&
+      !userCollapsedLiveRef.current
+    ) {
+      setExpanded(true);
+    }
+    prevLiveSignatureRef.current = entriesSignature;
+  }, [liveTurnActive, entriesSignature]);
+
+  const toggleExpanded = useCallback(() => {
+    setExpanded((previous) => {
+      const next = !previous;
+      if (liveTurnActive) {
+        userCollapsedLiveRef.current = next ? false : true;
+      }
+      return next;
+    });
+  }, [liveTurnActive]);
 
   if (entries.length === 0) {
     return null;
@@ -631,13 +676,21 @@ export const ToolActivityGroup = memo(function ToolActivityGroupComponent({
 
   return (
     <View style={[styles.messageWrapper, styles.messageWrapperAssistant]}>
-      <View style={styles.toolGroupCard}>
+      <View style={[styles.toolGroupCard, liveTurnActive && styles.toolGroupCardLive]}>
         <View style={styles.toolGroupEyebrowRow}>
-          <Ionicons name="hardware-chip-outline" size={12} color={theme.colors.textMuted} />
-          <Text style={styles.toolGroupEyebrowText}>Tools</Text>
+          <View style={styles.toolGroupEyebrowLeft}>
+            <Ionicons name="hardware-chip-outline" size={12} color={theme.colors.textMuted} />
+            <Text style={styles.toolGroupEyebrowText}>Tools</Text>
+          </View>
+          {liveTurnActive ? (
+            <View style={styles.toolGroupLiveBadge}>
+              <View style={styles.toolGroupLiveDot} />
+              <Text style={styles.toolGroupLiveBadgeText}>Live</Text>
+            </View>
+          ) : null}
         </View>
         <Pressable
-          onPress={() => setExpanded((previous) => !previous)}
+          onPress={toggleExpanded}
           style={({ pressed }) => [
             styles.toolGroupHeaderPressable,
             styles.toolGroupCardInteractive,
@@ -656,7 +709,7 @@ export const ToolActivityGroup = memo(function ToolActivityGroupComponent({
         </Pressable>
 
         <View style={styles.toolGroupList}>
-          {previewEntries.map((entry) => {
+          {previewEntries.map((entry, entryIndex) => {
             const detailPreview = toTimelineDetailPreview(
               entry,
               bridgeUrl,
@@ -697,85 +750,89 @@ export const ToolActivityGroup = memo(function ToolActivityGroupComponent({
             }
 
             return (
-              <Pressable
-                key={entry.id}
-                disabled={!hasDetails}
-                onPress={() => {
-                  if (!hasDetails) {
-                    return;
-                  }
-                  setExpandedEntryIds((previous) => ({
-                    ...previous,
-                    [entry.id]: !previous[entry.id],
-                  }));
-                }}
-                style={({ pressed }) => [
-                  styles.toolGroupEntryCard,
-                  hasDetails && styles.toolGroupEntryCardInteractive,
-                  rowVisual.isError && styles.timelineCardError,
-                  pressed && hasDetails && styles.toolGroupEntryCardPressed,
-                ]}
-              >
-                <View style={styles.toolGroupEntryHeader}>
-                  <Ionicons
-                    name={rowVisual.icon}
-                    size={14}
-                    color={
-                      rowVisual.isError
-                        ? theme.colors.statusError
-                        : theme.colors.statusRunning
+              <Fragment key={entry.id}>
+                <Pressable
+                  disabled={!hasDetails}
+                  onPress={() => {
+                    if (!hasDetails) {
+                      return;
                     }
-                  />
-                  <Text
-                    style={[
-                      styles.toolGroupEntryTitle,
-                      rowVisual.useMonospaceTitle && styles.toolGroupEntryTitleMono,
-                    ]}
-                    numberOfLines={entryExpanded ? 3 : 1}
-                  >
-                    {entry.title}
-                  </Text>
-                  {hasDetails ? (
+                    setExpandedEntryIds((previous) => ({
+                      ...previous,
+                      [entry.id]: !previous[entry.id],
+                    }));
+                  }}
+                  style={({ pressed }) => [
+                    styles.toolGroupEntryCard,
+                    hasDetails && styles.toolGroupEntryCardInteractive,
+                    rowVisual.isError && styles.timelineCardError,
+                    pressed && hasDetails && styles.toolGroupEntryCardPressed,
+                  ]}
+                >
+                  <View style={styles.toolGroupEntryHeader}>
                     <Ionicons
-                      name={entryExpanded ? 'chevron-up' : 'chevron-down'}
+                      name={rowVisual.icon}
                       size={14}
-                      color={theme.colors.textMuted}
+                      color={
+                        rowVisual.isError
+                          ? theme.colors.statusError
+                          : theme.colors.statusRunning
+                      }
                     />
-                  ) : null}
-                </View>
-                {hasDetails ? (
-                  <Text style={styles.toolGroupEntryToggleText}>
-                    {hasImages && isViewedImageEntry(entry.title, textDetails)
-                      ? entryExpanded
-                        ? 'Tap to hide path'
-                        : 'Tap to show path'
-                      : entryExpanded
-                        ? 'Tap to hide output'
-                        : textDetails.length <= 1
-                          ? 'Tap to show output'
-                          : `Tap to show ${String(textDetails.length)} lines`}
-                  </Text>
-                ) : null}
-                {detailPreview.images.map((image, imageIndex) => (
-                  <MarkdownImage
-                    key={`${entry.id}-image-${String(imageIndex)}`}
-                    source={image.source}
-                    accessibilityLabel={image.accessibilityLabel}
-                  />
-                ))}
-                {entryExpanded && hasDetails ? (
-                  <View style={styles.toolGroupEntryDetailWrap}>
-                    {textDetails.map((line, lineIndex) => (
-                      <SelectableMessageText
-                        key={`${entry.id}-line-${String(lineIndex)}`}
-                        style={styles.toolGroupEntryDetailLine}
-                      >
-                        {line}
-                      </SelectableMessageText>
-                    ))}
+                    <Text
+                      style={[
+                        styles.toolGroupEntryTitle,
+                        rowVisual.useMonospaceTitle && styles.toolGroupEntryTitleMono,
+                      ]}
+                      numberOfLines={entryExpanded ? 3 : 1}
+                    >
+                      {entry.title}
+                    </Text>
+                    {hasDetails ? (
+                      <Ionicons
+                        name={entryExpanded ? 'chevron-up' : 'chevron-down'}
+                        size={14}
+                        color={theme.colors.textMuted}
+                      />
+                    ) : null}
                   </View>
+                  {hasDetails ? (
+                    <Text style={styles.toolGroupEntryToggleText}>
+                      {hasImages && isViewedImageEntry(entry.title, textDetails)
+                        ? entryExpanded
+                          ? 'Tap to hide path'
+                          : 'Tap to show path'
+                        : entryExpanded
+                          ? 'Tap to hide output'
+                          : textDetails.length <= 1
+                            ? 'Tap to show output'
+                            : `Tap to show ${String(textDetails.length)} lines`}
+                    </Text>
+                  ) : null}
+                  {detailPreview.images.map((image, imageIndex) => (
+                    <MarkdownImage
+                      key={`${entry.id}-image-${String(imageIndex)}`}
+                      source={image.source}
+                      accessibilityLabel={image.accessibilityLabel}
+                    />
+                  ))}
+                  {entryExpanded && hasDetails ? (
+                    <View style={styles.toolGroupEntryDetailWrap}>
+                      {textDetails.map((line, lineIndex) => (
+                        <SelectableMessageText
+                          key={`${entry.id}-line-${String(lineIndex)}`}
+                          style={styles.toolGroupEntryDetailLine}
+                        >
+                          {line}
+                        </SelectableMessageText>
+                      ))}
+                    </View>
+                  ) : null}
+                </Pressable>
+                {entryIndex < previewEntries.length - 1 ? (
+                  <View style={styles.toolGroupEntryDivider} />
                 ) : null}
-              </Pressable>
+              </Fragment>
             );
           })}
           {!expanded && hiddenCount > 0 ? (
@@ -1690,11 +1747,48 @@ const createStyles = (theme: AppTheme) => {
     paddingHorizontal: theme.spacing.md,
     paddingVertical: theme.spacing.sm + 2,
   },
+  toolGroupCardLive: {
+    borderLeftWidth: 3,
+    borderLeftColor: theme.colors.statusRunning,
+  },
   toolGroupEyebrowRow: {
     flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'space-between',
     gap: 6,
     marginBottom: 2,
+  },
+  toolGroupEyebrowLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    flex: 1,
+    minWidth: 0,
+  },
+  toolGroupLiveBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingHorizontal: theme.spacing.sm,
+    paddingVertical: 2,
+    borderRadius: theme.radius.full,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: theme.colors.borderHighlight,
+    backgroundColor: theme.colors.bgInput,
+  },
+  toolGroupLiveDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: theme.colors.statusRunning,
+  },
+  toolGroupLiveBadgeText: {
+    ...theme.typography.caption,
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 0.6,
+    color: theme.colors.textSecondary,
+    textTransform: 'uppercase',
   },
   toolGroupEyebrowText: {
     ...theme.typography.caption,
@@ -1793,10 +1887,18 @@ const createStyles = (theme: AppTheme) => {
   toolGroupEntryDetailWrap: {
     marginTop: theme.spacing.xs,
     marginLeft: theme.spacing.lg + 2,
-    borderLeftWidth: StyleSheet.hairlineWidth,
-    borderLeftColor: theme.colors.borderLight,
-    paddingLeft: theme.spacing.sm,
+    paddingVertical: theme.spacing.xs,
+    paddingHorizontal: theme.spacing.sm,
     gap: 2,
+    borderRadius: theme.radius.sm,
+    backgroundColor: theme.colors.bgInput,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: theme.colors.borderLight,
+  },
+  toolGroupEntryDivider: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: theme.colors.borderLight,
+    marginVertical: theme.spacing.sm,
   },
   toolGroupEntryDetailLine: {
     fontFamily: theme.fonts.monoRegular,

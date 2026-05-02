@@ -9544,6 +9544,7 @@ const ChatView = memo(function ChatView({
         : [styles.messageListContent, { paddingBottom: bottomInset }],
     [bottomInset, styles.messageListContent]
   );
+  const liveTurnActive = chat.status === 'running';
   const isLargeChat = displayItems.length >= LARGE_CHAT_MESSAGE_COUNT_THRESHOLD;
   const keyExtractor = useCallback(
     (item: TranscriptDisplayItem) => (item.kind === 'message' ? item.renderKey : item.id),
@@ -9559,6 +9560,7 @@ const ChatView = memo(function ChatView({
               engine={chat.engine}
               bridgeUrl={bridgeUrl}
               bridgeToken={bridgeToken}
+              liveTurnActive={liveTurnActive}
             />
           </View>
         );
@@ -9605,7 +9607,16 @@ const ChatView = memo(function ChatView({
         </View>
       );
     },
-    [bridgeToken, bridgeUrl, chat.engine, inlineChoiceSet, onInlineOptionSelect, onOpenLocalPreview]
+    [
+      bridgeToken,
+      bridgeUrl,
+      chat.engine,
+      chat.status,
+      inlineChoiceSet,
+      liveTurnActive,
+      onInlineOptionSelect,
+      onOpenLocalPreview,
+    ]
   );
 
   return (
@@ -9614,6 +9625,7 @@ const ChatView = memo(function ChatView({
         key={chat.id}
         ref={scrollRef}
         data={displayMessages}
+        extraData={chat.status}
         keyExtractor={keyExtractor}
         renderItem={renderMessageItem}
         style={styles.messageList}
@@ -9721,6 +9733,7 @@ function areChatsEquivalentForTranscript(
     previous.id === next.id &&
     previous.parentThreadId === next.parentThreadId &&
     previous.engine === next.engine &&
+    previous.status === next.status &&
     previous.messages === next.messages
   );
 }
