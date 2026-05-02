@@ -1669,7 +1669,7 @@ function getDrawerChatSubtitle(chat: ChatSummary): string | null {
     return preview;
   }
 
-  return chat.cwd?.trim() || null;
+  return null;
 }
 
 function getChatEngineIconName(
