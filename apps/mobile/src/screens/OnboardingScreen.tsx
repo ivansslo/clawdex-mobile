@@ -555,6 +555,10 @@ export function OnboardingScreen({
                         >
                           {introEngineMark.label}
                         </Text>
+                        <View
+                          pointerEvents="none"
+                          style={styles.introHeroEngineLogoSpacer}
+                        />
                       </Animated.View>
                       <Text
                         style={styles.introHeroTitleTail}
@@ -1307,6 +1311,11 @@ const createStyles = (theme: AppTheme) => {
   introHeroEngineLogo: {
     width: 34,
     height: 34,
+  },
+  introHeroEngineLogoSpacer: {
+    width: 34,
+    height: 34,
+    opacity: 0,
   },
   introHeroEngineLabel: {
     ...theme.typography.largeTitle,
