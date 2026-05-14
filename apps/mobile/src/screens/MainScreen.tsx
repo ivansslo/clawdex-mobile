@@ -280,6 +280,7 @@ const SUGGESTIONS = [
   'Write tests for the main module',
 ];
 const OPEN_CHAT_MIN_LOADING_MS = 250;
+const EMPTY_MODEL_OPTIONS: ModelOption[] = [];
 
 export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
   function MainScreen(
@@ -415,7 +416,9 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
     const [bridgeCapabilities, setBridgeCapabilities] = useState<BridgeCapabilities | null>(
       null
     );
-    const [modelOptions, setModelOptions] = useState<ModelOption[]>([]);
+    const [modelOptionsByEngine, setModelOptionsByEngine] = useState<
+      Partial<Record<ChatEngine, ModelOption[]>>
+    >({});
     const [loadingModels, setLoadingModels] = useState(false);
     const [pendingChatEngine, setPendingChatEngine] = useState<ChatEngine>(
       () => defaultChatEngine ?? 'codex'
@@ -483,6 +486,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
       isMomentumScrolling: false,
     });
     const loadChatRequestRef = useRef(0);
+    const modelOptionsRequestRef = useRef(0);
     const agentThreadsRequestRef = useRef(0);
     const agentThreadsRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const openAgentThreadSelectorRef = useRef<(query?: string | null) => Promise<boolean>>(
@@ -755,6 +759,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
       ? resolveChatEngine(selectedChat.engine)
       : preferredNewChatEngine;
     const activeChatEngineLabel = getChatEngineLabel(activeChatEngine);
+    const modelOptions = modelOptionsByEngine[activeChatEngine] ?? EMPTY_MODEL_OPTIONS;
     const pendingEngineDefaults = defaultEngineSettings?.[preferredNewChatEngine] ?? null;
     const preferredDefaultModelId = normalizeModelId(pendingEngineDefaults?.modelId);
     const preferredDefaultEffort = normalizeReasoningEffort(pendingEngineDefaults?.effort);
@@ -791,6 +796,12 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
         ),
       [attachmentFileCandidates, attachmentPathDraft, pendingMentionPaths]
     );
+
+    useEffect(() => {
+      if (activeChatEngine !== 'cursor' && selectedCollaborationMode === 'ask') {
+        setSelectedCollaborationMode('default');
+      }
+    }, [activeChatEngine, selectedCollaborationMode]);
 
     const queueOptimisticUserMessage = useCallback(
       (
@@ -2853,17 +2864,31 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
     ]);
 
     const refreshModelOptions = useCallback(async () => {
+      const requestId = modelOptionsRequestRef.current + 1;
+      modelOptionsRequestRef.current = requestId;
+      const requestedEngine = activeChatEngine;
+      const requestedThreadId = selectedChatId;
       setLoadingModels(true);
       try {
         const models = await api.listModels(false, {
-          threadId: selectedChatId,
-          engine: activeChatEngine,
+          threadId: requestedThreadId,
+          engine: requestedEngine,
         });
-        setModelOptions(models);
+        if (modelOptionsRequestRef.current !== requestId) {
+          return;
+        }
+        setModelOptionsByEngine((previous) => ({
+          ...previous,
+          [requestedEngine]: models,
+        }));
       } catch (err) {
-        setError((err as Error).message);
+        if (modelOptionsRequestRef.current === requestId) {
+          setError((err as Error).message);
+        }
       } finally {
-        setLoadingModels(false);
+        if (modelOptionsRequestRef.current === requestId) {
+          setLoadingModels(false);
+        }
       }
     }, [activeChatEngine, api, selectedChatId]);
 
@@ -3510,33 +3535,62 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
     );
 
     const collaborationModeOptions = useMemo<SelectionSheetOption[]>(
-      () => [
-        {
-          key: 'default',
-          title: 'Default mode',
-          description: 'Answer directly and keep the turn moving.',
-          icon: 'chatbubble-ellipses-outline',
-          selected: selectedCollaborationMode === 'default',
-          onPress: () => {
-            setSelectedCollaborationMode('default');
-            setCollaborationModeMenuVisible(false);
-            setError(null);
+      () => {
+        const setMode = (mode: CollaborationMode) => {
+          setSelectedCollaborationMode(mode);
+          setCollaborationModeMenuVisible(false);
+          setError(null);
+        };
+
+        if (activeChatEngine === 'cursor') {
+          return [
+            {
+              key: 'default',
+              title: 'Agent mode',
+              description: 'Use Cursor as an implementation agent.',
+              icon: 'code-slash-outline' as const,
+              selected: selectedCollaborationMode === 'default',
+              onPress: () => setMode('default'),
+            },
+            {
+              key: 'ask',
+              title: 'Ask mode',
+              description: 'Answer questions and explain without changing files.',
+              icon: 'chatbubble-ellipses-outline' as const,
+              selected: selectedCollaborationMode === 'ask',
+              onPress: () => setMode('ask'),
+            },
+            {
+              key: 'plan',
+              title: 'Plan mode',
+              description: 'Inspect and propose a plan before implementation.',
+              icon: 'git-branch-outline' as const,
+              selected: selectedCollaborationMode === 'plan',
+              onPress: () => setMode('plan'),
+            },
+          ];
+        }
+
+        return [
+          {
+            key: 'default',
+            title: 'Default mode',
+            description: 'Answer directly and keep the turn moving.',
+            icon: 'chatbubble-ellipses-outline' as const,
+            selected: selectedCollaborationMode === 'default',
+            onPress: () => setMode('default'),
           },
-        },
-        {
-          key: 'plan',
-          title: 'Plan mode',
-          description: 'Pause to ask structured follow-up questions before execution.',
-          icon: 'git-branch-outline',
-          selected: selectedCollaborationMode === 'plan',
-          onPress: () => {
-            setSelectedCollaborationMode('plan');
-            setCollaborationModeMenuVisible(false);
-            setError(null);
+          {
+            key: 'plan',
+            title: 'Plan mode',
+            description: 'Pause to ask structured follow-up questions before execution.',
+            icon: 'git-branch-outline' as const,
+            selected: selectedCollaborationMode === 'plan',
+            onPress: () => setMode('plan'),
           },
-        },
-      ],
-      [selectedCollaborationMode]
+        ];
+      },
+      [activeChatEngine, selectedCollaborationMode]
     );
 
     const modelSettingsMenuOptions = useMemo<SelectionSheetOption[]>(
@@ -3648,7 +3702,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
             : 'Follow the bridge default model.',
           icon: 'sparkles-outline',
           badge: 'Auto',
-          selected: selectedModelId === null,
+          selected: selectedModelId === null || selectedModel === null,
           onPress: () => selectModel(null),
         },
         ...modelOptions.map((model) => ({
@@ -3664,7 +3718,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
           onPress: () => selectModel(model.id),
         })),
       ],
-      [modelOptions, selectModel, selectedModelId, serverDefaultModel]
+      [modelOptions, selectModel, selectedModel, selectedModelId, serverDefaultModel]
     );
 
     const effortPickerSheetOptions = useMemo<SelectionSheetOption[]>(
@@ -4187,7 +4241,10 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
                   engine: activeChatEngine,
                 });
           if (modelOptions.length === 0) {
-            setModelOptions(models);
+            setModelOptionsByEngine((previous) => ({
+              ...previous,
+              [activeChatEngine]: models,
+            }));
           }
           const lowered = argText.toLowerCase();
           const match = models.find(
@@ -4639,6 +4696,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
         return false;
       },
       [
+        activeChatEngine,
         activeEffort,
         activeModelId,
         activeEffortLabel,
@@ -8608,7 +8666,6 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
           currentPath={workspaceBrowsePath}
           parentPath={workspaceBrowseParentPath}
           entries={workspaceBrowseEntries}
-          loadingRecent={loadingWorkspaceRoots}
           loadingEntries={loadingWorkspaceBrowse}
           error={workspaceBrowseError}
           onBrowsePath={(path) => void browseWorkspacePath(path)}

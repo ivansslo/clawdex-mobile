@@ -2,6 +2,7 @@ import { EventEmitter } from 'node:events';
 import { readFile } from 'node:fs/promises';
 import { extname } from 'node:path';
 
+import { findCursorTranscriptWorkspaceCwd } from './cursorWorkspace.js';
 import {
   parseListParams,
   parseThreadIdParams,
@@ -21,6 +22,7 @@ import type {
   AppServerNotification,
   CursorAgentHandle,
   CursorAgentInfo,
+  CursorAgentMessage,
   CursorAppServerOptions,
   CursorDriver,
   CursorRunHandle,
@@ -35,10 +37,16 @@ interface LiveThreadState {
   agent: CursorAgentHandle;
   info: CursorAgentInfo;
   cwd: string;
+  storeCwd: string;
   model?: ModelSelection;
   turns: ThreadTurn[];
   activeRun?: CursorRunHandle;
   nameLocked: boolean;
+}
+
+interface ThreadWorkspace {
+  cwd: string;
+  storeCwd: string;
 }
 
 type NotificationListener = (notification: AppServerNotification) => void;
@@ -49,8 +57,11 @@ export class CursorAppServer {
   private readonly configuredCwd: string | null;
   private readonly apiKey: string | null;
   private readonly defaultModel: string | null;
+  private readonly cursorProjectsDir: string | undefined;
   private readonly events = new EventEmitter();
   private readonly liveThreads = new Map<string, LiveThreadState>();
+  private readonly knownThreadCwds = new Map<string, string>();
+  private readonly knownThreadStoreCwds = new Map<string, string>();
 
   constructor(options: CursorAppServerOptions) {
     if (options.runtime !== 'local') {
@@ -62,6 +73,7 @@ export class CursorAppServer {
     this.configuredCwd = normalizeString(options.cwd);
     this.apiKey = normalizeString(options.apiKey);
     this.defaultModel = normalizeString(options.defaultModel);
+    this.cursorProjectsDir = normalizeString(options.cursorProjectsDir) ?? undefined;
   }
 
   onNotification(listener: NotificationListener): () => void {
@@ -98,16 +110,50 @@ export class CursorAppServer {
   private async listThreads(params: unknown): Promise<Record<string, unknown>> {
     const parsed = parseListParams(params);
     this.requireApiKey();
-    const cwd = this.requireCwd(parsed.cwd);
-    const result = await this.driver.listAgents({
-      cwd,
-      limit: parsed.limit ?? 100,
-      cursor: parsed.cursor,
-    });
+    const requestedCwd = normalizeString(parsed.cwd);
+    const cwds = requestedCwd
+      ? uniqueStrings([requestedCwd, ...this.listKnownWorkspaceCwds()])
+      : this.listKnownWorkspaceCwds();
+    const limit = parsed.limit ?? 100;
+    const entries = new Map<string, CursorAgentInfo>();
+    let nextCursor: string | null = null;
+
+    for (const cwd of cwds) {
+      const result = await this.driver.listAgents({
+        cwd,
+        limit,
+        cursor: cwds.length === 1 ? parsed.cursor : undefined,
+      });
+
+      if (cwds.length === 1) {
+        nextCursor = result.nextCursor ?? null;
+      }
+
+      for (const agent of result.items) {
+        const effectiveCwd = await this.resolveAgentEffectiveCwd(agent, cwd, requestedCwd);
+        if (requestedCwd && effectiveCwd !== requestedCwd) {
+          continue;
+        }
+        const projectedAgent = { ...agent, cwd: effectiveCwd };
+        this.rememberAgentCwd(projectedAgent, cwd, effectiveCwd);
+        const existing = entries.get(agent.agentId);
+        if (!existing || projectedAgent.lastModified > existing.lastModified) {
+          entries.set(agent.agentId, projectedAgent);
+        }
+      }
+    }
 
     return {
-      data: result.items.map((agent) => projectAgentInfoToThread(agent, cwd)),
-      nextCursor: result.nextCursor ?? null,
+      data: [...entries.values()]
+        .sort(compareCursorAgentsByUpdatedAtDesc)
+        .slice(0, limit)
+        .map((agent) =>
+          projectAgentInfoToThread(
+            agent,
+            this.resolveKnownThreadWorkspace(agent.agentId, agent.cwd ?? requestedCwd).cwd
+          )
+        ),
+      nextCursor,
       backwardsCursor: null,
     };
   }
@@ -122,11 +168,13 @@ export class CursorAppServer {
       };
     }
 
-    const cwd = this.requireCwd(null);
-    const [agent, messages] = await Promise.all([
-      this.driver.getAgent(parsed.threadId, { cwd, apiKey }),
-      this.driver.listMessages(parsed.threadId, { cwd, limit: 1000 }),
-    ]);
+    const workspace = this.resolveKnownThreadWorkspace(parsed.threadId, parsed.cwd);
+    const { agent, messages, cwd, storeCwd } = await this.readPersistedThread(
+      parsed.threadId,
+      workspace,
+      apiKey
+    );
+    this.rememberAgentCwd(agent, storeCwd, cwd);
     return {
       thread: projectAgentInfoToThread(agent, cwd, messagesToTurns(messages)),
     };
@@ -164,11 +212,14 @@ export class CursorAppServer {
       agent,
       info,
       cwd,
+      storeCwd: cwd,
       model,
       turns: [],
       nameLocked: Boolean(parsed.name),
     };
     this.liveThreads.set(agent.agentId, state);
+    this.knownThreadCwds.set(agent.agentId, cwd);
+    this.knownThreadStoreCwds.set(agent.agentId, cwd);
     this.emit('thread/started', { threadId: agent.agentId });
 
     return {
@@ -179,14 +230,15 @@ export class CursorAppServer {
   private async startTurn(params: unknown): Promise<Record<string, unknown>> {
     const parsed = parseTurnStartParams(params);
     this.requireApiKey();
-    const state = await this.getOrResumeLiveThread(parsed.threadId);
+    const state = await this.getOrResumeLiveThread(parsed.threadId, parsed.cwd);
     const model = this.requireTurnModel(parsed.model, state.model);
+    const cursorPrompt = applyCursorModeToPrompt(parsed.prompt, parsed.collaborationMode);
     if (!state.nameLocked) {
       state.info.name = toPreview(parsed.prompt);
       state.nameLocked = true;
     }
     const run = await state.agent.send(
-      await this.buildUserMessage(parsed.prompt, parsed.imagePaths),
+      await this.buildUserMessage(cursorPrompt, parsed.imagePaths),
       { model }
     );
     state.model = model;
@@ -267,30 +319,31 @@ export class CursorAppServer {
     };
   }
 
-  private async getOrResumeLiveThread(threadId: string): Promise<LiveThreadState> {
+  private async getOrResumeLiveThread(
+    threadId: string,
+    requestCwd: string | null = null
+  ): Promise<LiveThreadState> {
     const live = this.liveThreads.get(threadId);
     if (live) {
       return live;
     }
 
-    const cwd = this.requireCwd(null);
+    const workspace = this.resolveKnownThreadWorkspace(threadId, requestCwd);
     const apiKey = this.requireApiKey();
     const configuredModel = this.configuredModelOrUndefined();
-    const [agent, info, messages, persistedModel] = await Promise.all([
-      this.driver.resumeAgent(threadId, { cwd, apiKey, model: configuredModel }),
-      this.driver.getAgent(threadId, { cwd, apiKey }),
-      this.driver.listMessages(threadId, { cwd, limit: 1000 }),
-      this.latestPersistedRunModel(threadId, cwd),
-    ]);
+    const { agent, info, messages, persistedModel, cwd, storeCwd } =
+      await this.resumePersistedThread(threadId, workspace, apiKey, configuredModel);
     const state: LiveThreadState = {
       agent,
       info,
       cwd,
+      storeCwd,
       model: agent.model ?? configuredModel ?? persistedModel,
       turns: messagesToTurns(messages),
       nameLocked: !isGenericCursorAgentName(info.name, info.agentId),
     };
     this.liveThreads.set(threadId, state);
+    this.rememberAgentCwd(info, storeCwd, cwd);
     return state;
   }
 
@@ -497,6 +550,168 @@ export class CursorAppServer {
     return cwd;
   }
 
+  private resolveKnownThreadWorkspace(
+    threadId: string,
+    requestCwd: string | null | undefined
+  ): ThreadWorkspace {
+    const live = this.liveThreads.get(threadId);
+    const cwd =
+      live?.cwd ??
+      normalizeString(requestCwd) ??
+      this.knownThreadCwds.get(threadId) ??
+      this.configuredCwd;
+    if (!cwd) {
+      throw new Error('CURSOR_WORKDIR or per-request cwd is required; no workspace fallback is allowed');
+    }
+    return {
+      cwd,
+      storeCwd:
+        live?.storeCwd ??
+        this.knownThreadStoreCwds.get(threadId) ??
+        this.knownThreadCwds.get(threadId) ??
+        cwd,
+    };
+  }
+
+  private rememberAgentCwd(
+    agent: CursorAgentInfo,
+    storeCwd: string,
+    effectiveCwd?: string
+  ): void {
+    const normalizedStoreCwd = normalizeString(storeCwd) ?? normalizeString(agent.cwd);
+    const cwd =
+      normalizeString(effectiveCwd) ?? normalizeString(agent.cwd) ?? normalizedStoreCwd;
+    if (!cwd) {
+      return;
+    }
+    this.knownThreadCwds.set(agent.agentId, cwd);
+    if (normalizedStoreCwd) {
+      this.knownThreadStoreCwds.set(agent.agentId, normalizedStoreCwd);
+    }
+  }
+
+  private listKnownWorkspaceCwds(): string[] {
+    const cwds = new Set<string>();
+    if (this.configuredCwd) {
+      cwds.add(this.configuredCwd);
+    }
+    for (const state of this.liveThreads.values()) {
+      cwds.add(state.cwd);
+    }
+    for (const cwd of this.knownThreadCwds.values()) {
+      cwds.add(cwd);
+    }
+    for (const cwd of this.knownThreadStoreCwds.values()) {
+      cwds.add(cwd);
+    }
+    if (cwds.size === 0) {
+      return [this.requireCwd(null)];
+    }
+    return [...cwds];
+  }
+
+  private async resolveAgentEffectiveCwd(
+    agent: CursorAgentInfo,
+    storeCwd: string,
+    requestCwd: string | null
+  ): Promise<string> {
+    const agentCwd = normalizeString(agent.cwd);
+    const transcriptCwd = await findCursorTranscriptWorkspaceCwd({
+      agentId: agent.agentId,
+      projectsDir: this.cursorProjectsDir,
+      knownCwds: uniqueStrings([
+        ...(requestCwd ? [requestCwd] : []),
+        ...(agentCwd ? [agentCwd] : []),
+        storeCwd,
+        ...this.listKnownWorkspaceCwds(),
+      ]),
+    });
+    return transcriptCwd ?? this.knownThreadCwds.get(agent.agentId) ?? agentCwd ?? storeCwd;
+  }
+
+  private async readPersistedThread(
+    threadId: string,
+    workspace: ThreadWorkspace,
+    apiKey: string
+  ): Promise<{
+    agent: CursorAgentInfo;
+    messages: CursorAgentMessage[];
+    cwd: string;
+    storeCwd: string;
+  }> {
+    let lastError: unknown;
+    for (const storeCwd of this.candidateStoreCwds(threadId, workspace)) {
+      try {
+        const [rawAgent, messages] = await Promise.all([
+          this.driver.getAgent(threadId, { cwd: storeCwd, apiKey }),
+          this.driver.listMessages(threadId, { cwd: storeCwd, limit: 1000 }),
+        ]);
+        const cwd = await this.resolveAgentEffectiveCwd(rawAgent, storeCwd, workspace.cwd);
+        return {
+          agent: { ...rawAgent, cwd },
+          messages,
+          cwd,
+          storeCwd,
+        };
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    throw lastError instanceof Error ? lastError : new Error(String(lastError));
+  }
+
+  private async resumePersistedThread(
+    threadId: string,
+    workspace: ThreadWorkspace,
+    apiKey: string,
+    configuredModel: ModelSelection | undefined
+  ): Promise<{
+    agent: CursorAgentHandle;
+    info: CursorAgentInfo;
+    messages: CursorAgentMessage[];
+    persistedModel: ModelSelection | undefined;
+    cwd: string;
+    storeCwd: string;
+  }> {
+    let lastError: unknown;
+    for (const storeCwd of this.candidateStoreCwds(threadId, workspace)) {
+      try {
+        const [agent, rawInfo, messages, persistedModel] = await Promise.all([
+          this.driver.resumeAgent(threadId, {
+            cwd: workspace.cwd,
+            ...(storeCwd === workspace.cwd ? {} : { storeCwd }),
+            apiKey,
+            model: configuredModel,
+          }),
+          this.driver.getAgent(threadId, { cwd: storeCwd, apiKey }),
+          this.driver.listMessages(threadId, { cwd: storeCwd, limit: 1000 }),
+          this.latestPersistedRunModel(threadId, storeCwd),
+        ]);
+        const cwd = await this.resolveAgentEffectiveCwd(rawInfo, storeCwd, workspace.cwd);
+        return {
+          agent,
+          info: { ...rawInfo, cwd },
+          messages,
+          persistedModel,
+          cwd,
+          storeCwd,
+        };
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    throw lastError instanceof Error ? lastError : new Error(String(lastError));
+  }
+
+  private candidateStoreCwds(threadId: string, workspace: ThreadWorkspace): string[] {
+    return uniqueStrings([
+      workspace.storeCwd,
+      this.knownThreadStoreCwds.get(threadId),
+      this.configuredCwd,
+      workspace.cwd,
+    ]);
+  }
+
   private requireModel(requestModel: string | null): ModelSelection {
     const model = normalizeString(requestModel) ?? this.defaultModel;
     if (!model) {
@@ -632,6 +847,46 @@ export function createCursorAppServerFromEnv(
 function normalizeString(value: string | null | undefined): string | null {
   const trimmed = value?.trim();
   return trimmed ? trimmed : null;
+}
+
+function applyCursorModeToPrompt(
+  prompt: string,
+  mode: 'default' | 'plan' | 'ask' | null
+): string {
+  if (mode === 'ask') {
+    return [
+      'Cursor mode: Ask. Answer questions and explain the codebase without modifying files or running mutating commands. If implementation is needed, describe the change instead of making it.',
+      prompt,
+    ].join('\n\n');
+  }
+
+  if (mode === 'plan') {
+    return [
+      'Cursor mode: Plan. Inspect the codebase and propose a concrete plan before implementation. Do not modify files or run mutating commands in this turn.',
+      prompt,
+    ].join('\n\n');
+  }
+
+  return prompt;
+}
+
+function compareCursorAgentsByUpdatedAtDesc(
+  left: CursorAgentInfo,
+  right: CursorAgentInfo
+): number {
+  const updatedDelta = right.lastModified - left.lastModified;
+  return updatedDelta === 0 ? left.agentId.localeCompare(right.agentId) : updatedDelta;
+}
+
+function uniqueStrings(values: Array<string | null | undefined>): string[] {
+  const unique = new Set<string>();
+  for (const value of values) {
+    const normalized = normalizeString(value);
+    if (normalized) {
+      unique.add(normalized);
+    }
+  }
+  return [...unique];
 }
 
 function mergeStreamingText(current: string, incoming: string): { text: string; delta: string } {

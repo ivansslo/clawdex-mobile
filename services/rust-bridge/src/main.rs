@@ -840,6 +840,17 @@ impl AppState {
         capabilities
     }
 
+    async fn bridge_status(&self) -> BridgeStatus {
+        let devices = self.hub.client_connections().await;
+        BridgeStatus {
+            status: "ok".to_string(),
+            at: now_iso(),
+            uptime_sec: self.started_at.elapsed().as_secs(),
+            connected_clients: devices.len(),
+            devices,
+        }
+    }
+
     async fn is_authorized(&self, headers: &HeaderMap, query_token: Option<&str>) -> bool {
         if !self.config.auth_enabled {
             return true;
@@ -862,6 +873,26 @@ impl AppState {
         };
 
         service.is_authorized(token).await
+    }
+}
+
+fn sanitize_client_metadata(value: Option<&str>, fallback: &str, max_chars: usize) -> String {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return fallback.to_string();
+    };
+
+    let sanitized = value
+        .chars()
+        .filter(|character| !character.is_control())
+        .take(max_chars)
+        .collect::<String>()
+        .trim()
+        .to_string();
+
+    if sanitized.is_empty() {
+        fallback.to_string()
+    } else {
+        sanitized
     }
 }
 
@@ -1959,8 +1990,57 @@ struct ClientHub {
     next_event_id: AtomicU64,
     replay_capacity: usize,
     clients: RwLock<HashMap<u64, mpsc::Sender<Message>>>,
+    client_infos: RwLock<HashMap<u64, BridgeDeviceConnection>>,
     notification_replay: RwLock<VecDeque<ReplayableNotification>>,
     notification_tx: broadcast::Sender<HubNotification>,
+}
+
+#[derive(Debug, Clone)]
+struct ClientConnectionMetadata {
+    client_type: String,
+    client_name: String,
+}
+
+impl Default for ClientConnectionMetadata {
+    fn default() -> Self {
+        Self {
+            client_type: "unknown".to_string(),
+            client_name: "Unknown device".to_string(),
+        }
+    }
+}
+
+impl ClientConnectionMetadata {
+    fn from_query(query: &RpcQuery) -> Self {
+        Self {
+            client_type: sanitize_client_metadata(query.client_type.as_deref(), "unknown", 32),
+            client_name: sanitize_client_metadata(
+                query.client_name.as_deref(),
+                "Unknown device",
+                64,
+            ),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BridgeDeviceConnection {
+    client_id: u64,
+    client_type: String,
+    client_name: String,
+    connected_at: String,
+    last_seen_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BridgeStatus {
+    status: String,
+    at: String,
+    uptime_sec: u64,
+    connected_clients: usize,
+    devices: Vec<BridgeDeviceConnection>,
 }
 
 #[derive(Clone)]
@@ -1989,6 +2069,7 @@ impl ClientHub {
             next_event_id: AtomicU64::new(1),
             replay_capacity,
             clients: RwLock::new(HashMap::new()),
+            client_infos: RwLock::new(HashMap::new()),
             notification_replay: RwLock::new(VecDeque::new()),
             notification_tx,
         }
@@ -1998,14 +2079,55 @@ impl ClientHub {
         self.notification_tx.subscribe()
     }
 
+    #[cfg(test)]
     async fn add_client(&self, tx: mpsc::Sender<Message>) -> u64 {
+        self.add_client_with_metadata(tx, ClientConnectionMetadata::default())
+            .await
+    }
+
+    async fn add_client_with_metadata(
+        &self,
+        tx: mpsc::Sender<Message>,
+        metadata: ClientConnectionMetadata,
+    ) -> u64 {
         let id = self.next_client_id.fetch_add(1, Ordering::Relaxed);
+        let now = now_iso();
         self.clients.write().await.insert(id, tx);
+        self.client_infos.write().await.insert(
+            id,
+            BridgeDeviceConnection {
+                client_id: id,
+                client_type: metadata.client_type,
+                client_name: metadata.client_name,
+                connected_at: now.clone(),
+                last_seen_at: now,
+            },
+        );
         id
     }
 
     async fn remove_client(&self, client_id: u64) {
         self.clients.write().await.remove(&client_id);
+        self.client_infos.write().await.remove(&client_id);
+    }
+
+    async fn mark_client_seen(&self, client_id: u64) {
+        let mut clients = self.client_infos.write().await;
+        if let Some(client) = clients.get_mut(&client_id) {
+            client.last_seen_at = now_iso();
+        }
+    }
+
+    async fn client_connections(&self) -> Vec<BridgeDeviceConnection> {
+        let mut clients = self
+            .client_infos
+            .read()
+            .await
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        clients.sort_by_key(|client| client.client_id);
+        clients
     }
 
     async fn send_json(&self, client_id: u64, value: Value) {
@@ -2068,9 +2190,17 @@ impl ClientHub {
         }
 
         if !stale_clients.is_empty() {
-            let mut clients = self.clients.write().await;
-            for client_id in stale_clients {
-                clients.remove(&client_id);
+            {
+                let mut clients = self.clients.write().await;
+                for client_id in &stale_clients {
+                    clients.remove(client_id);
+                }
+            }
+            {
+                let mut client_infos = self.client_infos.write().await;
+                for client_id in stale_clients {
+                    client_infos.remove(&client_id);
+                }
             }
         }
     }
@@ -6548,8 +6678,11 @@ struct BridgeQueueService {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct RpcQuery {
     token: Option<String>,
+    client_type: Option<String>,
+    client_name: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -6640,6 +6773,7 @@ async fn main() {
     let app = Router::new()
         .route("/rpc", get(ws_handler))
         .route("/health", get(health_handler))
+        .route("/status", get(status_handler))
         .route("/local-image", get(local_image_handler))
         .with_state(state.clone());
     let preview_app = Router::new()
@@ -6727,6 +6861,25 @@ async fn health_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
         "at": now_iso(),
         "uptimeSec": state.started_at.elapsed().as_secs(),
     }))
+}
+
+async fn status_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<RpcQuery>,
+) -> Response {
+    if !state.is_authorized(&headers, query.token.as_deref()).await {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({
+                "error": "unauthorized",
+                "message": "Missing or invalid bridge credentials"
+            })),
+        )
+            .into_response();
+    }
+
+    Json(state.bridge_status().await).into_response()
 }
 
 async fn local_image_handler(
@@ -7287,14 +7440,23 @@ async fn ws_handler(
             .into_response();
     }
 
-    ws.on_upgrade(move |socket| handle_socket(socket, state))
+    let client_metadata = ClientConnectionMetadata::from_query(&query);
+
+    ws.on_upgrade(move |socket| handle_socket(socket, state, client_metadata))
         .into_response()
 }
 
-async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
+async fn handle_socket(
+    socket: WebSocket,
+    state: Arc<AppState>,
+    client_metadata: ClientConnectionMetadata,
+) {
     let (mut socket_tx, mut socket_rx) = socket.split();
     let (tx, mut rx) = mpsc::channel::<Message>(WS_CLIENT_QUEUE_CAPACITY);
-    let client_id = state.hub.add_client(tx).await;
+    let client_id = state
+        .hub
+        .add_client_with_metadata(tx, client_metadata)
+        .await;
 
     let mut writer_task = tokio::spawn(async move {
         while let Some(message) = rx.recv().await {
@@ -7385,6 +7547,8 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
 }
 
 async fn handle_client_message(client_id: u64, text: String, state: &Arc<AppState>) {
+    state.hub.mark_client_seen(client_id).await;
+
     let parsed = match serde_json::from_str::<Value>(&text) {
         Ok(value) => value,
         Err(error) => {
@@ -7483,6 +7647,8 @@ async fn handle_bridge_method(
             "at": now_iso(),
             "uptimeSec": state.started_at.elapsed().as_secs(),
         })),
+        "bridge/status/read" => serde_json::to_value(state.bridge_status().await)
+            .map_err(|error| BridgeError::server(&error.to_string())),
         "bridge/capabilities/read" => serde_json::to_value(state.bridge_capabilities())
             .map_err(|error| BridgeError::server(&error.to_string())),
         "bridge/runtime/read" => serde_json::to_value(state.updater.runtime_info().await)
@@ -14931,6 +15097,28 @@ mod tests {
 
         hub.send_json(client_id, json!({ "ok": true })).await;
         assert!(!hub.clients.read().await.contains_key(&client_id));
+        assert!(hub.client_connections().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn client_connections_return_metadata() {
+        let hub = ClientHub::with_replay_capacity(4);
+        let (tx, _rx) = mpsc::channel(1);
+        let client_id = hub
+            .add_client_with_metadata(
+                tx,
+                ClientConnectionMetadata {
+                    client_type: "mobile".to_string(),
+                    client_name: "Mohit's iPhone".to_string(),
+                },
+            )
+            .await;
+
+        let clients = hub.client_connections().await;
+        assert_eq!(clients.len(), 1);
+        assert_eq!(clients[0].client_id, client_id);
+        assert_eq!(clients[0].client_type, "mobile");
+        assert_eq!(clients[0].client_name, "Mohit's iPhone");
     }
 
     #[tokio::test]

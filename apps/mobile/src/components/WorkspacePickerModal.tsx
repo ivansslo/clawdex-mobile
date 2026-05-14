@@ -8,6 +8,7 @@ import {
   Modal,
   Platform,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -28,7 +29,6 @@ interface WorkspacePickerModalProps {
   currentPath?: string | null;
   parentPath?: string | null;
   entries: FileSystemEntry[];
-  loadingRecent?: boolean;
   loadingEntries?: boolean;
   error?: string | null;
   onBrowsePath: (path: string | null) => void;
@@ -41,7 +41,7 @@ interface WorkspacePickerModalProps {
   onClose: () => void;
 }
 
-const ENTRY_ROW_HEIGHT = 58;
+const ENTRY_ROW_HEIGHT = 48;
 type IoniconName = keyof typeof Ionicons.glyphMap;
 
 export function WorkspacePickerModal({
@@ -53,7 +53,6 @@ export function WorkspacePickerModal({
   currentPath = null,
   parentPath = null,
   entries,
-  loadingRecent = false,
   loadingEntries = false,
   error = null,
   onBrowsePath,
@@ -122,11 +121,7 @@ export function WorkspacePickerModal({
     .filter((workspace) =>
       matchesSearch([workspace.path, toPathBasename(workspace.path)], normalizedSearch)
     );
-  const filteredRecentWorkspaces = recentWorkspaces.filter(
-    (workspace) =>
-      !favoritePathSet.has(workspace.path) &&
-      matchesSearch([workspace.path, toPathBasename(workspace.path)], normalizedSearch)
-  );
+
   const filteredEntries = entries.filter((entry) =>
     matchesSearch([entry.name, entry.path], normalizedSearch)
   );
@@ -137,11 +132,8 @@ export function WorkspacePickerModal({
   const currentFolderPath = currentPath ?? bridgeRoot ?? null;
   const currentFolderTitle = currentFolderPath ? toPathBasename(currentFolderPath) : 'Loading';
   const hasFavoriteWorkspaces = favoriteWorkspaces.length > 0;
-  const hasRecentWorkspaces = filteredRecentWorkspaces.length > 0;
   const compactFavoriteWorkspaces = favoriteWorkspaces.slice(0, 4);
-  const compactRecentWorkspaces = filteredRecentWorkspaces.slice(0, 2);
   const hasVisibleEntries = filteredEntries.length > 0;
-  const refreshingRecent = loadingRecent && hasRecentWorkspaces;
 
   const handleBrowsePath = (path: string | null) => {
     setPendingSelectionPath(path);
@@ -176,166 +168,138 @@ export function WorkspacePickerModal({
             </View>
 
             <View style={styles.body}>
-              <View style={styles.connectionRow}>
-                <Text style={styles.connectionText} numberOfLines={1}>
-                  {bridgeRoot ? `Start folder: ${toPathBasename(bridgeRoot)}` : 'Computer folders'}
-                </Text>
-                <Pressable
-                  onPress={() => onSelectPath(null)}
-                  style={({ pressed }) => [
-                    styles.defaultButton,
-                    selectedPath === null && styles.defaultButtonSelected,
-                    pressed && styles.pressed,
-                  ]}
-                >
-                  <Text
-                    style={[
-                      styles.defaultButtonText,
-                      selectedPath === null && styles.defaultButtonTextSelected,
+              <ScrollView
+                style={styles.topContentScroll}
+                contentContainerStyle={styles.topContentContainer}
+                showsVerticalScrollIndicator={false}
+              >
+                <View style={styles.connectionRow}>
+                  <Text style={styles.connectionText} numberOfLines={1}>
+                    {bridgeRoot ? `Start folder: ${toPathBasename(bridgeRoot)}` : 'Computer folders'}
+                  </Text>
+                  <Pressable
+                    onPress={() => onSelectPath(null)}
+                    style={({ pressed }) => [
+                      styles.defaultButton,
+                      selectedPath === null && styles.defaultButtonSelected,
+                      pressed && styles.pressed,
                     ]}
                   >
-                    {selectedPath === null ? 'Default' : 'Use Default'}
-                  </Text>
-                </Pressable>
-              </View>
-
-              <View style={styles.searchField}>
-                <Ionicons name="search" size={16} color={theme.colors.textMuted} />
-                <TextInput
-                  value={searchQuery}
-                  onChangeText={setSearchQuery}
-                  keyboardAppearance={theme.keyboardAppearance}
-                  placeholder="Search folders"
-                  placeholderTextColor={theme.colors.textMuted}
-                  style={styles.searchInput}
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  returnKeyType="search"
-                />
-              </View>
-
-              {actionLabel && onActionPress ? (
-                <Pressable
-                  onPress={handleActionPress}
-                  disabled={actionDisabled}
-                  style={({ pressed }) => [
-                    styles.actionCard,
-                    actionDisabled && styles.buttonDisabled,
-                    pressed && !actionDisabled && styles.pressed,
-                  ]}
-                >
-                  <View style={styles.actionIconWrap}>
-                    <Ionicons
-                      name="git-branch-outline"
-                      size={16}
-                      color={theme.colors.textSecondary}
-                    />
-                  </View>
-                  <View style={styles.actionCopy}>
-                    <Text style={styles.actionTitle}>{actionLabel}</Text>
-                    <Text style={styles.actionSubtitle} numberOfLines={2}>
-                      {actionDescription ??
-                        'Clone into the selected or currently open folder and start the chat there.'}
+                    <Text
+                      style={[
+                        styles.defaultButtonText,
+                        selectedPath === null && styles.defaultButtonTextSelected,
+                      ]}
+                    >
+                      {selectedPath === null ? 'Default' : 'Use Default'}
                     </Text>
-                  </View>
-                  <Ionicons
-                    name="chevron-forward"
-                    size={14}
-                    color={theme.colors.textMuted}
-                  />
-                </Pressable>
-              ) : null}
-
-              {hasFavoriteWorkspaces ? (
-                <>
-                  <View style={styles.sectionHeader}>
-                    <Text style={styles.sectionTitle}>Pinned</Text>
-                  </View>
-
-                  <View style={styles.favoriteGrid}>
-                    {compactFavoriteWorkspaces.map((workspace) => (
-                      <WorkspaceTile
-                        key={workspace.path}
-                        workspace={workspace}
-                        iconName="star"
-                        selected={workspace.path === pendingSelectionPath}
-                        onPress={() => handleBrowsePath(workspace.path)}
-                        isPinned={favoritePathSet.has(workspace.path)}
-                        onPinAction={() => onToggleFavorite?.(workspace.path)}
-                      />
-                    ))}
-                  </View>
-                </>
-              ) : null}
-
-              <View style={styles.sectionHeader}>
-                <Text style={styles.sectionTitle}>Recent</Text>
-                {refreshingRecent ? (
-                  <View style={styles.refreshBadge}>
-                    <ActivityIndicator size="small" color={theme.colors.textMuted} />
-                    <Text style={styles.refreshBadgeText}>Refreshing</Text>
-                  </View>
-                ) : null}
-              </View>
-
-              <View style={styles.recentCard}>
-                {hasRecentWorkspaces ? (
-                  <View style={styles.recentTileRow}>
-                    {compactRecentWorkspaces.map((workspace) => (
-                      <WorkspaceTile
-                        key={workspace.path}
-                        workspace={workspace}
-                        iconName="time-outline"
-                        selected={workspace.path === pendingSelectionPath}
-                        onPress={() => handleBrowsePath(workspace.path)}
-                        isPinned={favoritePathSet.has(workspace.path)}
-                        onPinAction={() => onToggleFavorite?.(workspace.path)}
-                      />
-                    ))}
-                  </View>
-                ) : loadingRecent ? (
-                  <View style={styles.recentLoadingRow}>
-                    <ActivityIndicator size="small" color={theme.colors.textMuted} />
-                    <Text style={styles.statusText}>Loading recent folders...</Text>
-                  </View>
-                ) : (
-                  <View style={styles.recentLoadingRow}>
-                    <Text style={styles.statusText}>
-                      {normalizedSearch ? 'No recent matches.' : 'No recent folders yet.'}
-                    </Text>
-                  </View>
-                )}
-              </View>
-
-              <View style={styles.breadcrumbRow}>
-                <Pressable
-                  onPress={() => parentPath && handleBrowsePath(parentPath)}
-                  disabled={!parentPath || (loadingEntries && !hasVisibleEntries)}
-                  style={({ pressed }) => [
-                    styles.upButton,
-                    (!parentPath || (loadingEntries && !hasVisibleEntries)) &&
-                      styles.buttonDisabled,
-                    pressed &&
-                      parentPath &&
-                      (!loadingEntries || hasVisibleEntries) &&
-                      styles.pressed,
-                  ]}
-                >
-                  <Ionicons name="return-up-back" size={14} color={theme.colors.textSecondary} />
-                  <Text style={styles.upButtonText}>Up</Text>
-                </Pressable>
-
-                <View style={styles.currentFolderChip}>
-                  <Text style={styles.currentFolderTitle} numberOfLines={1}>
-                    {currentFolderTitle}
-                  </Text>
-                  <Text style={styles.currentFolderPath} numberOfLines={1}>
-                    {currentFolderPath ?? 'Loading path'}
-                  </Text>
+                  </Pressable>
                 </View>
-              </View>
 
-              {error ? <Text style={styles.errorText}>{error}</Text> : null}
+                <View style={styles.searchField}>
+                  <Ionicons name="search" size={16} color={theme.colors.textMuted} />
+                  <TextInput
+                    value={searchQuery}
+                    onChangeText={setSearchQuery}
+                    keyboardAppearance={theme.keyboardAppearance}
+                    placeholder="Search folders"
+                    placeholderTextColor={theme.colors.textMuted}
+                    style={styles.searchInput}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    returnKeyType="search"
+                  />
+                </View>
+
+                {actionLabel && onActionPress ? (
+                  <Pressable
+                    onPress={handleActionPress}
+                    disabled={actionDisabled}
+                    style={({ pressed }) => [
+                      styles.actionCard,
+                      actionDisabled && styles.buttonDisabled,
+                      pressed && !actionDisabled && styles.pressed,
+                    ]}
+                  >
+                    <View style={styles.actionIconWrap}>
+                      <Ionicons
+                        name="git-branch-outline"
+                        size={16}
+                        color={theme.colors.textSecondary}
+                      />
+                    </View>
+                    <View style={styles.actionCopy}>
+                      <Text style={styles.actionTitle}>{actionLabel}</Text>
+                      <Text style={styles.actionSubtitle} numberOfLines={2}>
+                        {actionDescription ??
+                          'Clone into the selected or currently open folder and start the chat there.'}
+                      </Text>
+                    </View>
+                    <Ionicons
+                      name="chevron-forward"
+                      size={14}
+                      color={theme.colors.textMuted}
+                    />
+                  </Pressable>
+                ) : null}
+
+                {hasFavoriteWorkspaces ? (
+                  <>
+                    <View style={styles.sectionHeader}>
+                      <Text style={styles.sectionTitle}>Pinned</Text>
+                    </View>
+
+                    <View style={styles.favoriteGrid}>
+                      {compactFavoriteWorkspaces.map((workspace) => (
+                        <WorkspaceTile
+                          key={workspace.path}
+                          workspace={workspace}
+                          iconName="star"
+                          selected={workspace.path === pendingSelectionPath}
+                          onPress={() => handleBrowsePath(workspace.path)}
+                          isPinned={favoritePathSet.has(workspace.path)}
+                          onPinAction={() => onToggleFavorite?.(workspace.path)}
+                        />
+                      ))}
+                    </View>
+                  </>
+                ) : null}
+
+
+                <View style={styles.breadcrumbRow}>
+                  <Pressable
+                    onPress={() => parentPath && handleBrowsePath(parentPath)}
+                    disabled={!parentPath || (loadingEntries && !hasVisibleEntries)}
+                    style={({ pressed }) => [
+                      styles.upButton,
+                      (!parentPath || (loadingEntries && !hasVisibleEntries)) &&
+                        styles.buttonDisabled,
+                      pressed &&
+                        parentPath &&
+                        (!loadingEntries || hasVisibleEntries) &&
+                        styles.pressed,
+                    ]}
+                  >
+                    <Ionicons name="return-up-back" size={14} color={theme.colors.textSecondary} />
+                    <Text style={styles.upButtonText}>Up</Text>
+                  </Pressable>
+
+                  <View style={styles.currentFolderChip}>
+                    <Text style={styles.currentFolderTitle} numberOfLines={1}>
+                      {currentFolderTitle}
+                    </Text>
+                    <Text
+                      style={styles.currentFolderPath}
+                      numberOfLines={2}
+                      ellipsizeMode="middle"
+                    >
+                      {currentFolderPath ?? 'Loading path'}
+                    </Text>
+                  </View>
+                </View>
+
+                {error ? <Text style={styles.errorText}>{error}</Text> : null}
+              </ScrollView>
 
               <View style={styles.browserCard}>
                 {loadingEntries && !hasVisibleEntries ? (
@@ -413,10 +377,14 @@ export function WorkspacePickerModal({
               <View style={styles.footer}>
                 <View style={styles.selectionSummary}>
                   <Text style={styles.selectionLabel}>Workspace</Text>
-                  <Text style={styles.selectionTitle} numberOfLines={1}>
+                  <Text style={styles.selectionTitle} numberOfLines={1} ellipsizeMode="tail">
                     {footerTitle}
                   </Text>
-                  <Text style={styles.selectionPath} numberOfLines={1}>
+                  <Text
+                    style={styles.selectionPath}
+                    numberOfLines={2}
+                    ellipsizeMode="middle"
+                  >
                     {footerSubtitle}
                   </Text>
                 </View>
@@ -500,11 +468,15 @@ function WorkspaceTile({
               size={13}
               color={theme.colors.textSecondary}
             />
-            <Text style={styles.workspaceTileMeta} numberOfLines={1}>
+            <Text style={styles.workspaceTileMeta} numberOfLines={1} ellipsizeMode="tail">
               {formatWorkspaceMeta(workspace)}
             </Text>
           </View>
-          <Text style={styles.workspaceTileTitle} numberOfLines={1}>
+          <Text
+            style={styles.workspaceTileTitle}
+            numberOfLines={2}
+            ellipsizeMode="tail"
+          >
             {toPathBasename(workspace.path)}
           </Text>
         </View>
@@ -658,7 +630,7 @@ const createStyles = (theme: AppTheme) => {
     boxShadow: modalShadow,
   },
   header: {
-    minHeight: 56,
+    minHeight: 48,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
@@ -687,8 +659,16 @@ const createStyles = (theme: AppTheme) => {
   body: {
     flex: 1,
     paddingHorizontal: theme.spacing.lg,
-    paddingBottom: theme.spacing.md,
+    paddingBottom: theme.spacing.lg,
     gap: theme.spacing.sm,
+  },
+  topContentScroll: {
+    flexShrink: 1,
+    flexGrow: 0,
+  },
+  topContentContainer: {
+    gap: theme.spacing.sm,
+    paddingBottom: theme.spacing.sm,
   },
   connectionRow: {
     flexDirection: 'row',
@@ -723,7 +703,7 @@ const createStyles = (theme: AppTheme) => {
     color: theme.colors.textPrimary,
   },
   searchField: {
-    minHeight: 40,
+    minHeight: 36,
     borderRadius: theme.radius.lg,
     borderWidth: 1,
     borderColor: theme.colors.borderLight,
@@ -739,7 +719,7 @@ const createStyles = (theme: AppTheme) => {
     paddingVertical: 0,
   },
   actionCard: {
-    minHeight: 50,
+    minHeight: 44,
     borderRadius: theme.radius.lg,
     borderWidth: 1,
     borderColor: theme.colors.borderLight,
@@ -751,8 +731,8 @@ const createStyles = (theme: AppTheme) => {
     gap: theme.spacing.sm,
   },
   actionIconWrap: {
-    width: 28,
-    height: 28,
+    width: 24,
+    height: 24,
     borderRadius: theme.radius.full,
     alignItems: 'center',
     justifyContent: 'center',
@@ -778,13 +758,13 @@ const createStyles = (theme: AppTheme) => {
     color: theme.colors.textSecondary,
   },
   breadcrumbRow: {
-    minHeight: 36,
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     gap: theme.spacing.sm,
   },
   upButton: {
-    minHeight: 32,
+    minHeight: 28,
+    marginTop: 2,
     paddingHorizontal: theme.spacing.sm,
     borderRadius: theme.radius.full,
     borderWidth: 1,
@@ -802,13 +782,15 @@ const createStyles = (theme: AppTheme) => {
   currentFolderChip: {
     flex: 1,
     minWidth: 0,
-    minHeight: 36,
+    minHeight: 32,
     borderRadius: theme.radius.lg,
     borderWidth: 1,
     borderColor: theme.colors.borderLight,
     backgroundColor: theme.colors.bgItem,
     paddingHorizontal: theme.spacing.md,
+    paddingVertical: theme.spacing.xs,
     justifyContent: 'center',
+    gap: 2,
   },
   currentFolderTitle: {
     ...theme.typography.body,
@@ -856,16 +838,9 @@ const createStyles = (theme: AppTheme) => {
     color: theme.colors.textMuted,
     fontWeight: '600',
   },
-  recentCard: {
-    height: 56,
-  },
   favoriteGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: theme.spacing.sm,
-  },
-  recentTileRow: {
-    flexDirection: 'row',
     gap: theme.spacing.sm,
   },
   rowMainAction: {
@@ -877,7 +852,8 @@ const createStyles = (theme: AppTheme) => {
   },
   workspaceTile: {
     flexGrow: 1,
-    flexBasis: '48%',
+    flexShrink: 1,
+    flexBasis: 0,
     minWidth: 0,
     minHeight: 56,
     borderRadius: theme.radius.lg,
@@ -893,14 +869,15 @@ const createStyles = (theme: AppTheme) => {
   workspaceTileContent: {
     flex: 1,
     paddingHorizontal: theme.spacing.sm,
-    paddingVertical: 7,
-    gap: 1,
+    paddingVertical: theme.spacing.sm,
+    gap: 4,
     justifyContent: 'center',
   },
   workspaceTileHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 5,
+    minWidth: 0,
   },
   workspaceTileTitle: {
     ...theme.typography.body,
@@ -909,23 +886,13 @@ const createStyles = (theme: AppTheme) => {
     fontWeight: '600',
   },
   workspaceTileMeta: {
+    flex: 1,
+    minWidth: 0,
     ...theme.typography.caption,
     fontSize: 10,
     lineHeight: 13,
     color: theme.colors.textSecondary,
     fontWeight: '600',
-  },
-  recentLoadingRow: {
-    minHeight: 56,
-    borderRadius: theme.radius.lg,
-    borderWidth: 1,
-    borderColor: theme.colors.borderLight,
-    backgroundColor: theme.colors.bgItem,
-    alignItems: 'center',
-    justifyContent: 'center',
-    flexDirection: 'row',
-    gap: theme.spacing.sm,
-    paddingHorizontal: theme.spacing.md,
   },
   errorText: {
     ...theme.typography.caption,
@@ -933,7 +900,8 @@ const createStyles = (theme: AppTheme) => {
   },
   browserCard: {
     flex: 1,
-    minHeight: 220,
+    flexShrink: 1,
+    minHeight: 120,
     borderRadius: theme.radius.lg,
     borderWidth: 1,
     borderColor: theme.colors.borderLight,
@@ -959,8 +927,8 @@ const createStyles = (theme: AppTheme) => {
     borderBottomWidth: 0,
   },
   entryIconWrap: {
-    width: 32,
-    height: 32,
+    width: 28,
+    height: 28,
     borderRadius: theme.radius.md,
     alignItems: 'center',
     justifyContent: 'center',
@@ -979,21 +947,20 @@ const createStyles = (theme: AppTheme) => {
     fontWeight: '600',
   },
   footer: {
-    minHeight: 48,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: theme.spacing.sm,
+    gap: theme.spacing.md,
+    paddingTop: theme.spacing.sm,
   },
   selectionSummary: {
     flex: 1,
     minWidth: 0,
-    minHeight: 48,
     borderRadius: theme.radius.lg,
     borderWidth: 1,
     borderColor: theme.colors.borderLight,
     backgroundColor: theme.colors.bgItem,
     paddingHorizontal: theme.spacing.md,
-    paddingVertical: 6,
+    paddingVertical: theme.spacing.sm,
     justifyContent: 'center',
     gap: 2,
   },
@@ -1021,7 +988,7 @@ const createStyles = (theme: AppTheme) => {
   },
   footerFavoriteButton: {
     width: 44,
-    minHeight: 48,
+    height: 44,
     borderRadius: theme.radius.full,
     borderWidth: 1,
     borderColor: theme.colors.borderLight,
@@ -1038,7 +1005,7 @@ const createStyles = (theme: AppTheme) => {
   },
   footerUseButton: {
     width: 94,
-    minHeight: 48,
+    height: 44,
     borderRadius: theme.radius.lg,
     alignItems: 'center',
     justifyContent: 'center',

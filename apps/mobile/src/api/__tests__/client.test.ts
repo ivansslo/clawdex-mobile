@@ -24,6 +24,32 @@ describe('HostBridgeApiClient', () => {
     expect(result.status).toBe('ok');
   });
 
+  it('readBridgeStatus() calls bridge/status/read', async () => {
+    const ws = createWsMock();
+    ws.request.mockResolvedValue({
+      status: 'ok',
+      at: '2026-01-01T00:00:00Z',
+      uptimeSec: 10,
+      connectedClients: 1,
+      devices: [
+        {
+          clientId: 1,
+          clientType: 'mobile',
+          clientName: 'Mohit iPhone',
+          connectedAt: '2026-01-01T00:00:00Z',
+          lastSeenAt: '2026-01-01T00:00:01Z',
+        },
+      ],
+    });
+
+    const client = new HostBridgeApiClient({ ws: ws as unknown as HostBridgeWsClient });
+    const result = await client.readBridgeStatus();
+
+    expect(ws.request).toHaveBeenCalledWith('bridge/status/read');
+    expect(result.connectedClients).toBe(1);
+    expect(result.devices[0].clientName).toBe('Mohit iPhone');
+  });
+
   it('readAccountRateLimits() requests account/rateLimits/read and prefers codex bucket', async () => {
     const ws = createWsMock();
     ws.request.mockResolvedValue({
@@ -696,6 +722,46 @@ describe('HostBridgeApiClient', () => {
     expect(drawerChats[0]?.title).toBe('Analyzed the Clawdex mobile bridge.');
   });
 
+  it('getChat() includes cached Cursor cwd when reading a thread', async () => {
+    const ws = createWsMock();
+    ws.request.mockResolvedValue({
+      thread: {
+        id: 'cursor:agent_launchkit',
+        engine: 'cursor',
+        name: 'LaunchKit visuals',
+        preview: 'LaunchKit visuals',
+        createdAt: 1700000000,
+        updatedAt: 1700000002,
+        cwd: '/workspace/launchkit',
+        status: { type: 'idle' },
+        turns: [],
+      },
+    });
+
+    const client = new HostBridgeApiClient({ ws: ws as unknown as HostBridgeWsClient });
+    client.rememberChats([
+      {
+        id: 'cursor:agent_launchkit',
+        title: 'LaunchKit visuals',
+        createdAt: '2023-11-14T22:13:20.000Z',
+        updatedAt: '2023-11-14T22:13:22.000Z',
+        statusUpdatedAt: '2023-11-14T22:13:22.000Z',
+        status: 'complete',
+        lastMessagePreview: 'LaunchKit visuals',
+        engine: 'cursor',
+        cwd: '/workspace/launchkit',
+      },
+    ]);
+
+    await client.getChat('cursor:agent_launchkit');
+
+    expect(ws.request).toHaveBeenCalledWith('thread/read', {
+      threadId: 'cursor:agent_launchkit',
+      includeTurns: true,
+      cwd: '/workspace/launchkit',
+    });
+  });
+
   it('rememberChats() keeps an already-loaded full chat list monotonic', () => {
     const ws = createWsMock();
     const client = new HostBridgeApiClient({ ws: ws as unknown as HostBridgeWsClient });
@@ -1175,6 +1241,64 @@ describe('HostBridgeApiClient', () => {
     expect(ws.waitForTurnCompletion).not.toHaveBeenCalled();
     expect(chat.id).toBe('thr_1');
     expect(chat.messages.length).toBeGreaterThan(0);
+  });
+
+  it('sendChatMessage() uses cached Cursor cwd when the request omits cwd', async () => {
+    const ws = createWsMock();
+    ws.request
+      .mockResolvedValueOnce({}) // thread/resume
+      .mockResolvedValueOnce({ turn: { id: 'turn_cursor' } }) // turn/start
+      .mockResolvedValueOnce({
+        thread: {
+          id: 'cursor-agent-launchkit',
+          engine: 'cursor',
+          preview: 'Hello',
+          createdAt: 1700000000,
+          updatedAt: 1700000002,
+          cwd: '/workspace/launchkit',
+          status: { type: 'idle' },
+          turns: [
+            {
+              id: 'turn_cursor',
+              items: [
+                {
+                  type: 'userMessage',
+                  id: 'u1',
+                  content: [{ type: 'text', text: 'Hello' }],
+                },
+              ],
+            },
+          ],
+        },
+      });
+
+    const client = new HostBridgeApiClient({ ws: ws as unknown as HostBridgeWsClient });
+    client.rememberChats([
+      {
+        id: 'cursor-agent-launchkit',
+        title: 'LaunchKit',
+        createdAt: '2023-11-14T22:13:20.000Z',
+        updatedAt: '2023-11-14T22:13:22.000Z',
+        statusUpdatedAt: '2023-11-14T22:13:22.000Z',
+        status: 'complete',
+        lastMessagePreview: 'LaunchKit',
+        engine: 'cursor',
+        cwd: '/workspace/launchkit',
+      },
+    ]);
+
+    await client.sendChatMessage('cursor-agent-launchkit', { content: 'Hello' });
+
+    expect(ws.request).toHaveBeenNthCalledWith(
+      1,
+      'thread/resume',
+      expect.objectContaining({ cwd: '/workspace/launchkit' })
+    );
+    expect(ws.request).toHaveBeenNthCalledWith(
+      2,
+      'turn/start',
+      expect.objectContaining({ cwd: '/workspace/launchkit' })
+    );
   });
 
   it('sendChatMessage() retries thread/read until sent user message is materialized', async () => {
@@ -2345,6 +2469,74 @@ describe('HostBridgeApiClient', () => {
     );
   });
 
+  it('sendChatMessage() sends Cursor ask mode for cached Cursor chats', async () => {
+    const ws = createWsMock();
+    ws.request
+      .mockResolvedValueOnce({}) // thread/resume
+      .mockResolvedValueOnce({ turn: { id: 'turn_ask' } }) // turn/start
+      .mockResolvedValueOnce({
+        thread: {
+          id: 'cursor-agent-ask',
+          engine: 'cursor',
+          preview: 'done',
+          createdAt: 1700000000,
+          updatedAt: 1700000002,
+          cwd: '/workspace/launchkit',
+          status: { type: 'idle' },
+          turns: [
+            {
+              id: 'turn_ask',
+              items: [
+                {
+                  type: 'userMessage',
+                  id: 'u_ask',
+                  content: [{ type: 'text', text: 'what does this do?' }],
+                },
+              ],
+            },
+          ],
+        },
+      });
+
+    const client = new HostBridgeApiClient({ ws: ws as unknown as HostBridgeWsClient });
+    client.rememberChats([
+      {
+        id: 'cursor-agent-ask',
+        title: 'Cursor ask',
+        createdAt: '2023-11-14T22:13:20.000Z',
+        updatedAt: '2023-11-14T22:13:22.000Z',
+        statusUpdatedAt: '2023-11-14T22:13:22.000Z',
+        status: 'complete',
+        lastMessagePreview: 'Cursor ask',
+        engine: 'cursor',
+        cwd: '/workspace/launchkit',
+      },
+    ]);
+
+    await client.sendChatMessage('cursor-agent-ask', {
+      content: 'what does this do?',
+      model: 'composer-2',
+      collaborationMode: 'ask',
+    });
+
+    expect(ws.request).toHaveBeenNthCalledWith(
+      2,
+      'turn/start',
+      expect.objectContaining({
+        model: 'composer-2',
+        cwd: '/workspace/launchkit',
+        collaborationMode: {
+          mode: 'ask',
+          settings: {
+            model: 'composer-2',
+            reasoning_effort: null,
+            developer_instructions: null,
+          },
+        },
+      })
+    );
+  });
+
   it('sendChatMessage() resolves default model before plan mode turn when model is unset', async () => {
     const ws = createWsMock();
     ws.request
@@ -2392,6 +2584,7 @@ describe('HostBridgeApiClient', () => {
       'model/list',
       expect.objectContaining({
         includeHidden: false,
+        threadId: 'thr_plan_fallback',
       })
     );
     expect(ws.request).toHaveBeenNthCalledWith(
@@ -2407,6 +2600,84 @@ describe('HostBridgeApiClient', () => {
             developer_instructions: null,
           },
         },
+      })
+    );
+  });
+
+  it('sendChatMessage() resolves plan-mode defaults from the cached chat engine', async () => {
+    const ws = createWsMock();
+    ws.request
+      .mockResolvedValueOnce({}) // thread/resume
+      .mockResolvedValueOnce({
+        data: [
+          {
+            id: 'composer-2',
+            displayName: 'Composer 2',
+            providerId: 'cursor',
+            isDefault: true,
+          },
+        ],
+      }) // model/list fallback
+      .mockResolvedValueOnce({ turn: { id: 'turn_cursor_plan' } }) // turn/start
+      .mockResolvedValueOnce({
+        thread: {
+          id: 'cursor-agent-plan',
+          engine: 'cursor',
+          preview: 'done',
+          createdAt: 1700000000,
+          updatedAt: 1700000002,
+          cwd: '/workspace/launchkit',
+          status: { type: 'idle' },
+          turns: [
+            {
+              id: 'turn_cursor_plan',
+              items: [
+                {
+                  type: 'userMessage',
+                  id: 'u_cursor_plan',
+                  content: [{ type: 'text', text: 'plan this' }],
+                },
+              ],
+            },
+          ],
+        },
+      });
+
+    const client = new HostBridgeApiClient({ ws: ws as unknown as HostBridgeWsClient });
+    client.rememberChats([
+      {
+        id: 'cursor-agent-plan',
+        title: 'Cursor plan',
+        createdAt: '2023-11-14T22:13:20.000Z',
+        updatedAt: '2023-11-14T22:13:22.000Z',
+        statusUpdatedAt: '2023-11-14T22:13:22.000Z',
+        status: 'complete',
+        lastMessagePreview: 'Cursor plan',
+        engine: 'cursor',
+        cwd: '/workspace/launchkit',
+      },
+    ]);
+
+    await client.sendChatMessage('cursor-agent-plan', {
+      content: 'plan this',
+      collaborationMode: 'plan',
+    });
+
+    expect(ws.request).toHaveBeenNthCalledWith(
+      2,
+      'model/list',
+      expect.objectContaining({
+        includeHidden: false,
+        threadId: 'cursor-agent-plan',
+        engine: 'cursor',
+      })
+    );
+    expect(ws.request).toHaveBeenNthCalledWith(
+      3,
+      'turn/start',
+      expect.objectContaining({
+        model: 'composer-2',
+        cwd: '/workspace/launchkit',
       })
     );
   });

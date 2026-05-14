@@ -77,7 +77,7 @@ export interface CreateChatRequest {
   approvalPolicy?: ApprovalPolicy;
 }
 
-export type CollaborationMode = 'default' | 'plan';
+export type CollaborationMode = 'default' | 'plan' | 'ask';
 
 export interface SendChatMessageRequest {
   content: string;
@@ -584,6 +584,22 @@ export interface BridgeCapabilities {
     selfUpdate: boolean;
     browserPreview: boolean;
   };
+}
+
+export interface BridgeDeviceConnection {
+  clientId: number;
+  clientType: string;
+  clientName: string;
+  connectedAt: string;
+  lastSeenAt: string;
+}
+
+export interface BridgeStatus {
+  status: 'ok';
+  at: string;
+  uptimeSec: number;
+  connectedClients: number;
+  devices: BridgeDeviceConnection[];
 }
 
 export interface BrowserPreviewSession {

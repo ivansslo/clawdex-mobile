@@ -67,14 +67,11 @@ import {
 } from './src/bridgeProfiles';
 import { env } from './src/config';
 import {
-  loadStoredGitHubAppAuthTokens,
-  loginWithGitHubApp,
   refreshGitHubAppAuthTokens,
   saveStoredGitHubAppAuthTokens,
 } from './src/githubAppAuth';
 import {
   fetchGitHubCodespace,
-  fetchGitHubUser,
   GitHubApiError,
   shouldRefreshGitHubUserAccessToken,
   startGitHubCodespace,
@@ -289,7 +286,6 @@ export default function App() {
   );
   const [recentBrowserTargetUrls, setRecentBrowserTargetUrls] = useState<string[]>([]);
   const [pendingBrowserTargetUrl, setPendingBrowserTargetUrl] = useState<string | null>(null);
-  const [gitHubCodespacesSigningIn, setGitHubCodespacesSigningIn] = useState(false);
   const [pendingGitHubCodespacesSession, setPendingGitHubCodespacesSession] =
     useState<PendingGitHubCodespacesSession | null>(null);
   const [gitHubCodespacesRouteMode, setGitHubCodespacesRouteMode] =
@@ -2066,57 +2062,6 @@ export default function App() {
     openGitHubCodespacesRecoverySetup,
   ]);
 
-  const startGitHubCodespacesSignIn = useCallback(async () => {
-    if (!env.githubClientId || !env.githubAppAuthBaseUrl) {
-      openGitHubCodespaces(null);
-      return;
-    }
-
-    setGitHubCodespacesSigningIn(true);
-    try {
-      let token = await loadStoredGitHubAppAuthTokens();
-      if (
-        token &&
-        shouldRefreshGitHubUserAccessToken({
-          accessTokenExpiresAtMs: token.accessTokenExpiresAtMs,
-          refreshToken: token.refreshToken,
-          refreshTokenExpiresAtMs: token.refreshTokenExpiresAtMs,
-        }) &&
-        token.refreshToken
-      ) {
-        token = await refreshGitHubAppAuthTokens(env.githubAppAuthBaseUrl, token.refreshToken);
-      }
-
-      let user: GitHubUser | null = null;
-      if (token?.accessToken?.trim()) {
-        try {
-          user = await fetchGitHubUser(token.accessToken);
-        } catch {
-          token = null;
-        }
-      }
-
-      if (!token || !user) {
-        token = await loginWithGitHubApp({
-          clientId: env.githubClientId,
-          authBaseUrl: env.githubAppAuthBaseUrl,
-        });
-        user = await fetchGitHubUser(token.accessToken);
-      }
-
-      await persistGitHubAuthTokenForUser(user.login, token);
-      openGitHubCodespaces({ token, user });
-    } catch (error) {
-      console.warn(
-        `GitHub Codespaces sign-in skipped: ${
-          error instanceof Error ? error.message : String(error)
-        }`
-      );
-    } finally {
-      setGitHubCodespacesSigningIn(false);
-    }
-  }, [openGitHubCodespaces, persistGitHubAuthTokenForUser]);
-
   const handleEditBridgeProfile = useCallback(() => {
     if (isGitHubBridgeProfile(activeBridgeProfile)) {
       openGitHubCodespaces();
@@ -2413,20 +2358,6 @@ export default function App() {
               initialBridgeToken={initialToken}
               allowInsecureRemoteBridge={env.allowInsecureRemoteBridge}
               allowQueryTokenAuth={env.allowWsQueryTokenAuth}
-              githubCodespacesEnabled={Boolean(
-                env.githubClientId && env.githubAppAuthBaseUrl
-              )}
-              githubCodespacesLoading={gitHubCodespacesSigningIn}
-              onOpenGitHubCodespaces={
-                env.githubClientId && env.githubAppAuthBaseUrl
-                  ? startGitHubCodespacesSignIn
-                  : undefined
-              }
-              onSignInWithGitHubCodespaces={
-                env.githubClientId && env.githubAppAuthBaseUrl
-                  ? startGitHubCodespacesSignIn
-                  : undefined
-              }
               onSave={handleBridgeProfileSaved}
               onCancel={canCancel ? handleCancelOnboarding : undefined}
             />

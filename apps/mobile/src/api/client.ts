@@ -18,6 +18,7 @@ import type {
   BrowserPreviewDiscoveryResponse,
   BrowserPreviewSession,
   BridgeCapabilities,
+  BridgeStatus,
   BridgeThreadQueueActionResponse,
   BridgeThreadQueueSendResponse,
   BridgeThreadQueueState,
@@ -136,7 +137,7 @@ interface AppServerAccountReadResponse {
 }
 
 interface AppServerCollaborationMode {
-  mode: 'plan' | 'default';
+  mode: 'plan' | 'default' | 'ask';
   settings: {
     model: string;
     reasoning_effort: ReasoningEffort | null;
@@ -341,6 +342,10 @@ export class HostBridgeApiClient {
 
   health(): Promise<HealthResponse> {
     return this.ws.request<HealthResponse>('bridge/health/read');
+  }
+
+  readBridgeStatus(): Promise<BridgeStatus> {
+    return this.ws.request<BridgeStatus>('bridge/status/read');
   }
 
   readBridgeCapabilities(): Promise<BridgeCapabilities> {
@@ -1728,7 +1733,11 @@ export class HostBridgeApiClient {
       throw new Error('Only user role is supported in bridge/chat messaging');
     }
 
-    const normalizedCwd = normalizeCwd(body.cwd);
+    const cachedSummary = this.peekChatSummary(id);
+    const cachedCursorCwd =
+      cachedSummary?.engine === 'cursor' ? normalizeCwd(cachedSummary.cwd) : null;
+    const normalizedCwd = normalizeCwd(body.cwd) ?? cachedCursorCwd;
+    const cachedEngine = normalizeChatEngine(cachedSummary?.engine);
     const normalizedModel = normalizeModel(body.model);
     const normalizedEffort = normalizeEffort(body.effort);
     const normalizedServiceTier = normalizeServiceTier(body.serviceTier);
@@ -1753,7 +1762,10 @@ export class HostBridgeApiClient {
     let effectiveModel = normalizedModel ?? resumedThreadSettings?.model ?? null;
     if (requestedCollaborationMode && !effectiveModel && !options?.skipResume) {
       try {
-        const models = await this.listModels(false);
+        const models = await this.listModels(false, {
+          threadId: id,
+          ...(cachedEngine ? { engine: cachedEngine } : {}),
+        });
         effectiveModel =
           models.find((entry) => entry.isDefault)?.id ?? models[0]?.id ?? null;
       } catch {
@@ -1768,7 +1780,8 @@ export class HostBridgeApiClient {
     const normalizedCollaborationMode = toTurnCollaborationMode(
       requestedCollaborationMode,
       effectiveModel,
-      effectiveEffort
+      effectiveEffort,
+      cachedEngine
     );
 
     return {
@@ -1911,9 +1924,13 @@ export class HostBridgeApiClient {
     let lastTransientError: unknown = null;
     for (let attempt = 0; attempt <= TRANSIENT_THREAD_READ_RETRY_DELAYS_MS.length; attempt += 1) {
       try {
+        const cachedSummary = this.peekChatSummary(threadId);
+        const cursorCwd =
+          cachedSummary?.engine === 'cursor' ? normalizeCwd(cachedSummary.cwd) : null;
         return await this.ws.request<AppServerReadResponse>('thread/read', {
           threadId,
           includeTurns,
+          ...(cursorCwd ? { cwd: cursorCwd } : {}),
         });
       } catch (error) {
         if (!isTransientThreadReadError(error)) {
@@ -2444,14 +2461,19 @@ function normalizeLocalImages(raw: LocalImageInput[] | undefined): TurnInputLoca
 function toTurnCollaborationMode(
   value: CollaborationMode | string | null | undefined,
   model: string | null,
-  effort: ReasoningEffort | null
+  effort: ReasoningEffort | null,
+  engine: ChatEngine | null
 ): AppServerCollaborationMode | null {
   if (typeof value !== 'string') {
     return null;
   }
 
   const normalized = value.trim().toLowerCase();
-  if (normalized !== 'plan' && normalized !== 'default') {
+  if (normalized !== 'plan' && normalized !== 'default' && normalized !== 'ask') {
+    return null;
+  }
+
+  if (normalized === 'ask' && engine !== 'cursor') {
     return null;
   }
 
@@ -2477,7 +2499,7 @@ function normalizeCollaborationMode(
   }
 
   const normalized = value.trim().toLowerCase();
-  if (normalized === 'plan' || normalized === 'default') {
+  if (normalized === 'plan' || normalized === 'default' || normalized === 'ask') {
     return normalized;
   }
 

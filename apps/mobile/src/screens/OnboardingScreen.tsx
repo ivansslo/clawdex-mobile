@@ -14,6 +14,7 @@ import {
   Platform,
   Pressable,
   ScrollView,
+  Share,
   StyleSheet,
   Text,
   TextInput,
@@ -47,10 +48,6 @@ interface OnboardingScreenProps {
   initialBridgeToken?: string | null;
   allowInsecureRemoteBridge?: boolean;
   allowQueryTokenAuth?: boolean;
-  githubCodespacesEnabled?: boolean;
-  githubCodespacesLoading?: boolean;
-  onOpenGitHubCodespaces?: () => void;
-  onSignInWithGitHubCodespaces?: () => void | Promise<void>;
   onSave: (draft: OnboardingBridgeProfileDraft) => void | Promise<void>;
   onCancel?: () => void;
 }
@@ -63,18 +60,16 @@ type OnboardingStep = 'intro' | 'connect';
 type PairingPayload = { bridgeToken: string; bridgeUrl?: string };
 
 const BRIDGE_SETUP_COMMANDS = 'npm install -g clawdex-mobile@latest\nclawdex init';
+const CLAWDEX_BRIDGE_SETUP_URL = 'https://getclawdex.com/bridge-setup/';
 const SETUP_STAGES = [
   {
-    title: 'Start desktop service',
-    description: 'Run the CLI on your server and wait for the pairing QR.',
+    title: 'Start',
   },
   {
-    title: 'Pair private connection',
-    description: 'Scan QR or paste the URL and token.',
+    title: 'Pair',
   },
   {
-    title: 'Verify auth',
-    description: 'Confirm health and authenticated RPC before continuing.',
+    title: 'Verify',
   },
 ] as const;
 const INTRO_ENGINE_MARKS = [
@@ -91,10 +86,6 @@ export function OnboardingScreen({
   initialBridgeToken,
   allowInsecureRemoteBridge = false,
   allowQueryTokenAuth = false,
-  githubCodespacesEnabled = false,
-  githubCodespacesLoading = false,
-  onOpenGitHubCodespaces,
-  onSignInWithGitHubCodespaces,
   onSave,
   onCancel,
 }: OnboardingScreenProps) {
@@ -280,7 +271,8 @@ export function OnboardingScreen({
 
   const normalizedTokenPreview = tokenInput.trim();
   const showOnboardingDock = mode === 'initial';
-  const introGitHubAction = onOpenGitHubCodespaces ?? onSignInWithGitHubCodespaces;
+  const continueLabel =
+    mode === 'edit' ? 'Save URL' : mode === 'reconnect' ? 'Reconnect' : 'Continue';
   const currentSetupStage = useMemo(() => {
     if (showIntroStep) {
       return 1;
@@ -509,45 +501,42 @@ export function OnboardingScreen({
                 <Animated.View style={introHeroAnimatedStyle}>
                   <View style={styles.introHero}>
                     <View style={styles.introHeroArt}>
-                      <View style={styles.introHeroOrbit}>
-                        <View style={[styles.introHeroNode, styles.introHeroNodePrimary]}>
-                          <Ionicons
-                            name="phone-portrait-outline"
-                            size={18}
-                            color={theme.colors.textPrimary}
+                      <View
+                        style={styles.introHeroEngineCloud}
+                        accessibilityLabel="Codex, Cursor, and OpenCode"
+                      >
+                        <View style={[styles.introHeroEngineCard, styles.introHeroEngineCardCodex]}>
+                          <Image
+                            source={codexMarkPng}
+                            resizeMode="contain"
+                            style={styles.introHeroEngineCardLogo}
                           />
                         </View>
-                        <View style={[styles.introHeroNode, styles.introHeroNodeLeft]}>
-                          <Ionicons
-                            name="logo-github"
-                            size={16}
-                            color={theme.colors.textPrimary}
+                        <View style={[styles.introHeroEngineCard, styles.introHeroEngineCardCursor]}>
+                          <Image
+                            source={cursorMarkPng}
+                            resizeMode="contain"
+                            style={styles.introHeroEngineCardLogo}
                           />
                         </View>
-                        <View style={[styles.introHeroNode, styles.introHeroNodeRight]}>
-                          <Ionicons
-                            name="hardware-chip-outline"
-                            size={16}
-                            color={theme.colors.textPrimary}
+                        <View
+                          style={[styles.introHeroEngineCard, styles.introHeroEngineCardOpenCode]}
+                        >
+                          <Image
+                            source={opencodeMarkPng}
+                            resizeMode="contain"
+                            style={[
+                              styles.introHeroEngineCardLogo,
+                              styles.introHeroEngineCardLogoWide,
+                            ]}
                           />
                         </View>
-                        <View style={styles.introHeroConnectorLeft} />
-                        <View style={styles.introHeroConnectorRight} />
                       </View>
                     </View>
                     <View style={styles.introHeroTitleWrap}>
                       <Animated.View
                         style={[styles.introHeroEngineWord, introEngineAnimatedStyle]}
                       >
-                        <View
-                          style={styles.introHeroEngineLogoFrame}
-                        >
-                          <Image
-                            source={introEngineMark.logo}
-                            resizeMode="contain"
-                            style={styles.introHeroEngineLogo}
-                          />
-                        </View>
                         <Text
                           style={styles.introHeroEngineLabel}
                           numberOfLines={1}
@@ -555,10 +544,6 @@ export function OnboardingScreen({
                         >
                           {introEngineMark.label}
                         </Text>
-                        <View
-                          pointerEvents="none"
-                          style={styles.introHeroEngineLogoSpacer}
-                        />
                       </Animated.View>
                       <Text
                         style={styles.introHeroTitleTail}
@@ -569,32 +554,15 @@ export function OnboardingScreen({
                       </Text>
                     </View>
                     <Text style={styles.introHeroDescription}>
-                      Choose where your session lives.
+                      Pair your phone with your own machine.
                     </Text>
                   </View>
                 </Animated.View>
               </View>
 
               <Animated.View style={[styles.introFooter, introActionsAnimatedStyle]}>
-                {githubCodespacesEnabled && introGitHubAction ? (
-                  <ChoiceAction
-                    variant="primary"
-                    logo="github"
-                    title={githubCodespacesLoading ? 'Opening GitHub...' : 'GitHub Codespaces'}
-                    meta={
-                      githubCodespacesLoading
-                        ? 'Returning here automatically'
-                        : 'Hosted workspace'
-                    }
-                    loading={githubCodespacesLoading}
-                    disabled={githubCodespacesLoading}
-                    onPress={() => {
-                      void introGitHubAction();
-                    }}
-                  />
-                ) : null}
                 <ChoiceAction
-                  variant="secondary"
+                  variant="primary"
                   logo="clawdex"
                   title="Private connection"
                   meta="Your machine"
@@ -636,19 +604,6 @@ export function OnboardingScreen({
                     )}
                   </View>
                   <View style={styles.heroTopRowRight}>
-                    {githubCodespacesEnabled && onOpenGitHubCodespaces ? (
-                      <Pressable
-                        onPress={onOpenGitHubCodespaces}
-                        hitSlop={8}
-                        style={({ pressed }) => [
-                          styles.connectTopButton,
-                          pressed && styles.cancelBtnPressed,
-                        ]}
-                      >
-                        <Ionicons name="logo-github" size={14} color={theme.colors.textPrimary} />
-                        <Text style={styles.connectTopButtonText}>Use GitHub</Text>
-                      </Pressable>
-                    ) : null}
                     {(mode === 'edit' || mode === 'add' || mode === 'reconnect') && onCancel ? (
                       <Pressable
                         onPress={onCancel}
@@ -663,24 +618,16 @@ export function OnboardingScreen({
 
                 <BlurView intensity={55} tint={theme.blurTint} style={styles.formCard}>
                   <View style={styles.commandPanel}>
-                    <View style={styles.formSectionHeader}>
-                      <Text style={styles.formSectionEyebrow}>1. Start desktop service</Text>
-                      <Text style={styles.formSectionTitle}>
-                        Run this on your machine or server.
-                      </Text>
-                    </View>
+                    <Text style={styles.formSectionEyebrow}>1. Start</Text>
                     <CommandSnippet
-                      label="Run on your server"
+                      label="Desktop command"
                       command={BRIDGE_SETUP_COMMANDS}
-                      hint="After it starts, scan the pairing QR here."
                     />
                   </View>
 
                   <View style={styles.formSectionHeader}>
-                    <Text style={styles.formSectionEyebrow}>2. Pair this phone</Text>
-                    <Text style={styles.formSectionTitle}>
-                      Scan the QR first. Paste details only if scanning is not available.
-                    </Text>
+                    <Text style={styles.formSectionEyebrow}>2. Pair</Text>
+                    <Text style={styles.formSectionTitle}>Scan QR or paste details.</Text>
                   </View>
 
                   <View style={styles.connectPrimaryActions}>
@@ -695,15 +642,12 @@ export function OnboardingScreen({
                       ]}
                     >
                       <Ionicons name="qr-code-outline" size={16} color={theme.colors.textPrimary} />
-                      <Text style={styles.scanButtonText}>Scan pairing QR</Text>
+                      <Text style={styles.scanButtonText}>Scan QR</Text>
                     </Pressable>
                   </View>
-                  <Text style={styles.helperText}>
-                    QR fills the URL and token together.
-                  </Text>
 
                   <View style={styles.fieldGroup}>
-                    <Text style={styles.label}>Connection URL</Text>
+                    <Text style={styles.label}>URL</Text>
                     <View style={styles.inputRow}>
                       <View style={styles.inputIconWrap}>
                         <Ionicons name="globe-outline" size={16} color={theme.colors.textSecondary} />
@@ -731,10 +675,7 @@ export function OnboardingScreen({
                   </View>
 
                   <View style={styles.fieldGroup}>
-                    <View style={styles.tokenHeaderRow}>
-                      <Text style={styles.label}>Connection Token</Text>
-                      <Text style={styles.optionalLabel}>Required</Text>
-                    </View>
+                    <Text style={styles.label}>Token</Text>
                     <View style={styles.tokenInputWrap}>
                       <View style={styles.inputRow}>
                         <View style={styles.inputIconWrap}>
@@ -779,19 +720,6 @@ export function OnboardingScreen({
                     </View>
                   </View>
 
-                  <Text style={styles.helperText}>
-                    `http`, `https`, `ws`, and `wss` all work. `/rpc` is added automatically.
-                  </Text>
-
-                  {normalizedBridgeUrl ? (
-                    <View style={styles.previewWrap}>
-                      <Text style={styles.previewLabel}>Normalized target</Text>
-                      <Text selectable style={styles.previewValue}>
-                        {normalizedBridgeUrl}
-                      </Text>
-                    </View>
-                  ) : null}
-
                   {insecureRemoteWarning ? (
                     <StatusBanner
                       tone="warning"
@@ -819,10 +747,7 @@ export function OnboardingScreen({
                   ) : null}
 
                   <View style={styles.formSectionHeader}>
-                    <Text style={styles.formSectionEyebrow}>3. Test and save</Text>
-                    <Text style={styles.formSectionTitle}>
-                      Save it once the connection responds.
-                    </Text>
+                    <Text style={styles.formSectionEyebrow}>3. Save</Text>
                   </View>
 
                   <View style={styles.actionRow}>
@@ -844,33 +769,44 @@ export function OnboardingScreen({
                       )}
                       <Text style={styles.secondaryButtonText}>Test Connection</Text>
                     </Pressable>
-                    <Pressable
-                      onPress={() => {
-                        void handleSave();
-                      }}
-                      disabled={checkingConnection}
-                      style={({ pressed }) => [
-                        styles.primaryButton,
-                        pressed && !checkingConnection && styles.primaryButtonPressed,
-                        checkingConnection && styles.primaryButtonDisabled,
-                      ]}
-                    >
-                      {checkingConnection ? (
-                        <ActivityIndicator size="small" color={theme.colors.accentText} />
-                      ) : (
-                        <Ionicons name="arrow-forward" size={16} color={theme.colors.accentText} />
-                      )}
-                      <Text style={styles.primaryButtonText}>
-                        {mode === 'edit'
-                          ? 'Save URL'
-                          : mode === 'reconnect'
-                            ? 'Reconnect'
-                            : 'Continue'}
-                      </Text>
-                    </Pressable>
                   </View>
                 </BlurView>
               </ScrollView>
+              <View style={styles.connectFooter}>
+                <Pressable
+                  onPress={() => {
+                    void handleSave();
+                  }}
+                  disabled={checkingConnection}
+                  style={({ pressed }) => [
+                    styles.primaryButton,
+                    styles.connectFooterButton,
+                    pressed && !checkingConnection && styles.primaryButtonPressed,
+                    checkingConnection && styles.primaryButtonDisabled,
+                  ]}
+                >
+                  {checkingConnection ? (
+                    <View style={styles.primaryButtonIconWrap}>
+                      <ActivityIndicator size="small" color={theme.colors.accentText} />
+                    </View>
+                  ) : (
+                    <View style={styles.primaryButtonIconWrap}>
+                      <Ionicons
+                        name="shield-checkmark-outline"
+                        size={18}
+                        color={theme.colors.accentText}
+                      />
+                    </View>
+                  )}
+                  <View style={styles.primaryButtonContent}>
+                    <View style={styles.primaryButtonCopy}>
+                      <Text style={styles.primaryButtonText}>{continueLabel}</Text>
+                      <Text style={styles.primaryButtonSubtext}>Start using Clawdex</Text>
+                    </View>
+                    <Ionicons name="arrow-forward" size={20} color={theme.colors.accentText} />
+                  </View>
+                </Pressable>
+              </View>
             </View>
           )}
           <Modal
@@ -978,11 +914,9 @@ function OnboardingStepDock({ currentStage }: { currentStage: number }) {
 function CommandSnippet({
   label,
   command,
-  hint,
 }: {
   label: string;
   command: string;
-  hint: string;
 }) {
   const theme = useAppTheme();
   const styles = useMemo(() => createStyles(theme), [theme]);
@@ -995,6 +929,14 @@ function CommandSnippet({
       setCopied(false);
     }, 1400);
   }, [command]);
+  const handleShareGuide = useCallback(() => {
+    const title = 'Clawdex bridge setup';
+    void Share.share(
+      Platform.OS === 'ios'
+        ? { title, url: CLAWDEX_BRIDGE_SETUP_URL }
+        : { title, message: `${title}\n${CLAWDEX_BRIDGE_SETUP_URL}` }
+    ).catch(() => {});
+  }, []);
 
   return (
     <View style={styles.commandCard}>
@@ -1003,37 +945,49 @@ function CommandSnippet({
           <Ionicons name="terminal-outline" size={14} color={theme.colors.textSecondary} />
           <Text style={styles.commandCardLabel}>{label}</Text>
         </View>
-        <Pressable
-          onPress={() => {
-            void handleCopy();
-          }}
-          style={({ pressed }) => [
-            styles.commandCopyButton,
-            copied && styles.commandCopyButtonCopied,
-            pressed && styles.commandCopyButtonPressed,
-          ]}
-        >
-          <Ionicons
-            name={copied ? 'checkmark-outline' : 'copy-outline'}
-            size={14}
-            color={copied ? theme.colors.accentText : theme.colors.textPrimary}
-          />
-          <Text
-            style={[
-              styles.commandCopyButtonText,
-              copied && styles.commandCopyButtonTextCopied,
+        <View style={styles.commandCardActions}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Share bridge setup guide"
+            onPress={handleShareGuide}
+            style={({ pressed }) => [
+              styles.commandIconButton,
+              pressed && styles.commandCopyButtonPressed,
             ]}
           >
-            {copied ? 'Copied' : 'Copy'}
-          </Text>
-        </Pressable>
+            <Ionicons name="share-outline" size={14} color={theme.colors.textPrimary} />
+          </Pressable>
+          <Pressable
+            onPress={() => {
+              void handleCopy();
+            }}
+            style={({ pressed }) => [
+              styles.commandCopyButton,
+              copied && styles.commandCopyButtonCopied,
+              pressed && styles.commandCopyButtonPressed,
+            ]}
+          >
+            <Ionicons
+              name={copied ? 'checkmark-outline' : 'copy-outline'}
+              size={14}
+              color={copied ? theme.colors.accentText : theme.colors.textPrimary}
+            />
+            <Text
+              style={[
+                styles.commandCopyButtonText,
+                copied && styles.commandCopyButtonTextCopied,
+              ]}
+            >
+              {copied ? 'Copied' : 'Copy'}
+            </Text>
+          </Pressable>
+        </View>
       </View>
       <View style={styles.commandCodeWrap}>
         <Text selectable style={styles.commandCodeText}>
           {command}
         </Text>
       </View>
-      <Text style={styles.commandCardHint}>{hint}</Text>
     </View>
   );
 }
@@ -1228,18 +1182,15 @@ const createStyles = (theme: AppTheme) => {
     alignItems: 'center',
     marginBottom: theme.spacing.sm,
   },
-  introHeroOrbit: {
-    width: 184,
-    height: 156,
+  introHeroEngineCloud: {
+    width: 236,
+    height: 158,
     alignItems: 'center',
-    justifyContent: 'flex-start',
+    justifyContent: 'center',
     position: 'relative',
   },
-  introHeroNode: {
+  introHeroEngineCard: {
     position: 'absolute',
-    width: 56,
-    height: 56,
-    borderRadius: 20,
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: StyleSheet.hairlineWidth,
@@ -1249,38 +1200,38 @@ const createStyles = (theme: AppTheme) => {
       ? '0px 12px 24px rgba(0, 0, 0, 0.22)'
       : '0px 10px 20px rgba(15, 31, 54, 0.10)',
   },
-  introHeroNodePrimary: {
-    top: 0,
-    backgroundColor: theme.isDark ? 'rgba(181, 189, 204, 0.16)' : 'rgba(56, 79, 106, 0.12)',
+  introHeroEngineCardCodex: {
+    top: 4,
+    left: 82,
+    width: 72,
+    height: 72,
+    borderRadius: 24,
     borderColor: theme.colors.borderHighlight,
+    backgroundColor: theme.isDark ? 'rgba(181, 189, 204, 0.16)' : 'rgba(255,255,255,0.86)',
   },
-  introHeroNodeLeft: {
-    left: 20,
-    top: 92,
+  introHeroEngineCardCursor: {
+    left: 24,
+    top: 82,
+    width: 66,
+    height: 66,
+    borderRadius: 22,
+    transform: [{ rotate: '-8deg' }],
   },
-  introHeroNodeRight: {
-    right: 20,
-    top: 92,
+  introHeroEngineCardOpenCode: {
+    right: 12,
+    top: 88,
+    width: 94,
+    height: 58,
+    borderRadius: 20,
+    transform: [{ rotate: '7deg' }],
   },
-  introHeroConnectorLeft: {
-    position: 'absolute',
-    left: 73,
-    top: 52,
-    width: 2,
-    height: 54,
-    borderRadius: 999,
-    backgroundColor: theme.isDark ? 'rgba(181, 189, 204, 0.26)' : 'rgba(56, 79, 106, 0.22)',
-    transform: [{ rotate: '34deg' }],
+  introHeroEngineCardLogo: {
+    width: 38,
+    height: 38,
   },
-  introHeroConnectorRight: {
-    position: 'absolute',
-    right: 73,
-    top: 52,
-    width: 2,
-    height: 54,
-    borderRadius: 999,
-    backgroundColor: theme.isDark ? 'rgba(181, 189, 204, 0.26)' : 'rgba(56, 79, 106, 0.22)',
-    transform: [{ rotate: '-34deg' }],
+  introHeroEngineCardLogoWide: {
+    width: 64,
+    height: 36,
   },
   introHeroTitleWrap: {
     width: '100%',
@@ -1292,30 +1243,11 @@ const createStyles = (theme: AppTheme) => {
     gap: theme.spacing.xs,
   },
   introHeroEngineWord: {
-    minWidth: 180,
+    minWidth: 160,
     maxWidth: 260,
     height: 42,
-    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: theme.spacing.sm,
-  },
-  introHeroEngineLogoFrame: {
-    width: 34,
-    height: 34,
-    borderRadius: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
-    overflow: 'hidden',
-  },
-  introHeroEngineLogo: {
-    width: 34,
-    height: 34,
-  },
-  introHeroEngineLogoSpacer: {
-    width: 34,
-    height: 34,
-    opacity: 0,
   },
   introHeroEngineLabel: {
     ...theme.typography.largeTitle,
@@ -1499,11 +1431,16 @@ const createStyles = (theme: AppTheme) => {
   scrollContent: {
     paddingHorizontal: theme.spacing.lg,
     paddingTop: theme.spacing.md,
-    paddingBottom: theme.spacing.xxl,
+    paddingBottom: theme.spacing.lg,
     gap: theme.spacing.md,
   },
   connectRoot: {
     flex: 1,
+  },
+  connectFooter: {
+    paddingHorizontal: theme.spacing.lg,
+    paddingTop: theme.spacing.sm,
+    paddingBottom: theme.spacing.xxl,
   },
   connectHeaderRow: {
     flexDirection: 'row',
@@ -1632,11 +1569,6 @@ const createStyles = (theme: AppTheme) => {
     color: theme.colors.textSecondary,
     lineHeight: 18,
   },
-  helperText: {
-    ...theme.typography.caption,
-    color: theme.colors.textMuted,
-    lineHeight: 18,
-  },
   commandPanel: {
     gap: theme.spacing.sm,
     paddingTop: theme.spacing.xs,
@@ -1661,6 +1593,12 @@ const createStyles = (theme: AppTheme) => {
     gap: 6,
     flex: 1,
     minWidth: 0,
+  },
+  commandCardActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.xs,
+    flexShrink: 0,
   },
   commandCardLabel: {
     ...theme.typography.caption,
@@ -1688,6 +1626,16 @@ const createStyles = (theme: AppTheme) => {
   commandCopyButtonPressed: {
     opacity: 0.84,
   },
+  commandIconButton: {
+    width: 30,
+    height: 30,
+    borderRadius: theme.radius.full,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.bgInput,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   commandCopyButtonText: {
     ...theme.typography.caption,
     color: theme.colors.textPrimary,
@@ -1710,11 +1658,6 @@ const createStyles = (theme: AppTheme) => {
     fontSize: 12,
     lineHeight: 18,
   },
-  commandCardHint: {
-    ...theme.typography.caption,
-    color: theme.colors.textMuted,
-    lineHeight: 16,
-  },
   fieldGroup: {
     gap: theme.spacing.sm,
   },
@@ -1723,17 +1666,6 @@ const createStyles = (theme: AppTheme) => {
     textTransform: 'uppercase',
     letterSpacing: 0,
     color: theme.colors.textMuted,
-  },
-  tokenHeaderRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    gap: theme.spacing.sm,
-  },
-  optionalLabel: {
-    ...theme.typography.caption,
-    color: theme.colors.textMuted,
-    fontSize: 11,
   },
   inputRow: {
     flex: 1,
@@ -1807,24 +1739,6 @@ const createStyles = (theme: AppTheme) => {
     ...theme.typography.headline,
     color: theme.colors.textPrimary,
     fontWeight: '700',
-  },
-  previewWrap: {
-    borderRadius: 16,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.borderLight,
-    backgroundColor: glassSubtleBackground,
-    paddingHorizontal: theme.spacing.md,
-    paddingVertical: theme.spacing.sm,
-    gap: theme.spacing.xs,
-  },
-  previewLabel: {
-    ...theme.typography.caption,
-    color: theme.colors.textMuted,
-  },
-  previewValue: {
-    ...theme.typography.mono,
-    color: theme.colors.textPrimary,
-    fontSize: 13,
   },
   statusBanner: {
     flexDirection: 'row',
@@ -1901,6 +1815,14 @@ const createStyles = (theme: AppTheme) => {
     borderRadius: 16,
     minHeight: 54,
   },
+  connectFooterButton: {
+    flex: 0,
+    minHeight: 78,
+    borderRadius: 24,
+    justifyContent: 'flex-start',
+    paddingHorizontal: theme.spacing.md,
+    gap: theme.spacing.md,
+  },
   primaryButtonPressed: {
     backgroundColor: theme.colors.accentPressed,
   },
@@ -1911,6 +1833,36 @@ const createStyles = (theme: AppTheme) => {
     ...theme.typography.headline,
     color: theme.colors.accentText,
     fontWeight: '700',
+  },
+  primaryButtonIconWrap: {
+    width: 46,
+    height: 46,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: theme.isDark ? 'rgba(0,0,0,0.08)' : 'rgba(255,255,255,0.38)',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: theme.isDark ? 'rgba(0,0,0,0.10)' : 'rgba(255,255,255,0.48)',
+  },
+  primaryButtonContent: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: theme.spacing.md,
+  },
+  primaryButtonCopy: {
+    flex: 1,
+    minWidth: 0,
+    alignItems: 'flex-start',
+    gap: 2,
+  },
+  primaryButtonSubtext: {
+    ...theme.typography.caption,
+    color: theme.colors.accentText,
+    opacity: 0.72,
+    fontWeight: '600',
   },
   scannerModalRoot: {
     flex: 1,

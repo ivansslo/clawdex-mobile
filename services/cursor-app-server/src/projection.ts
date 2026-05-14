@@ -36,7 +36,7 @@ export function projectAgentInfoToThread(
     createdAt: toUnixSeconds(createdAtMs),
     updatedAt: toUnixSeconds(updatedAtMs),
     status: { type: status },
-    cwd: agent.cwd ?? cwd,
+    cwd,
     source: 'cursorSdk',
     turns,
   };

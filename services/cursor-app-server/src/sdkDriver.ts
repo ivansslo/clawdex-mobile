@@ -1,6 +1,8 @@
 import {
   Agent,
   Cursor,
+  type AgentOptions,
+  type CursorAgentPlatformOptions,
   type ModelListItem,
   type Run,
   type SDKAgent,
@@ -33,22 +35,23 @@ export class CursorSdkDriver implements CursorDriver {
         apiKey: options.apiKey,
         name: options.name,
         model: options.model,
-        local: {
-          cwd: options.cwd,
-        },
+        ...buildLocalCursorAgentOptions({ cwd: options.cwd }),
       })
     );
   }
 
   async resumeAgent(
     agentId: string,
-    options: { cwd: string; apiKey: string; model?: ModelSelection }
+    options: { cwd: string; storeCwd?: string; apiKey: string; model?: ModelSelection }
   ): Promise<CursorAgentHandle> {
     return wrapAgent(
       await Agent.resume(agentId, {
         apiKey: options.apiKey,
         model: options.model,
-        local: { cwd: options.cwd },
+        ...buildLocalCursorAgentOptions({
+          cwd: options.cwd,
+          ...(options.storeCwd ? { storeCwd: options.storeCwd } : {}),
+        }),
       })
     );
   }
@@ -105,6 +108,24 @@ export class CursorSdkDriver implements CursorDriver {
   async listModels(options: { apiKey: string }): Promise<CursorModelListItem[]> {
     return (await Cursor.models.list({ apiKey: options.apiKey })).map(toModelListItem);
   }
+}
+
+export function buildLocalCursorAgentOptions(options: {
+  cwd: string;
+  storeCwd?: string;
+}): Pick<AgentOptions, 'local' | 'platform'> {
+  return {
+    local: {
+      cwd: options.cwd,
+    },
+    platform: localCursorAgentPlatform(options.storeCwd ?? options.cwd),
+  };
+}
+
+export function localCursorAgentPlatform(cwd: string): CursorAgentPlatformOptions {
+  return {
+    workspaceRef: cwd,
+  };
 }
 
 function wrapAgent(agent: SDKAgent): CursorAgentHandle {

@@ -139,7 +139,7 @@ export interface CursorDriver {
   }): Promise<CursorAgentHandle>;
   resumeAgent(
     agentId: string,
-    options: { cwd: string; apiKey: string; model?: ModelSelection }
+    options: { cwd: string; storeCwd?: string; apiKey: string; model?: ModelSelection }
   ): Promise<CursorAgentHandle>;
   listAgents(options: {
     cwd: string;
@@ -204,5 +204,6 @@ export interface CursorAppServerOptions {
   apiKey?: string;
   defaultModel?: string;
   driver?: CursorDriver;
+  cursorProjectsDir?: string;
   now?: () => Date;
 }

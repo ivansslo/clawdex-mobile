@@ -1,9 +1,10 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 
 import { CursorAppServer } from '../appServer.js';
+import { cursorProjectDirName } from '../cursorWorkspace.js';
 import { JsonRpcStdioServer } from '../jsonRpc.js';
 import type {
   CursorAgentHandle,
@@ -103,6 +104,17 @@ class MockDriver implements CursorDriver {
     name?: string;
     model?: ModelSelection;
   } | null = null;
+  lastResumeOptions: {
+    cwd: string;
+    storeCwd?: string;
+    apiKey: string;
+    model?: ModelSelection;
+  } | null = null;
+  lastGetOptions: {
+    cwd: string;
+    apiKey?: string;
+  } | null = null;
+  readonly listAgentCwds: string[] = [];
   nextRunMessages: CursorStreamMessage[] = [];
   nextRunResult: CursorRunResult = {
     id: 'run-1',
@@ -139,33 +151,61 @@ class MockDriver implements CursorDriver {
     return agent;
   }
 
-  async resumeAgent(agentId: string): Promise<CursorAgentHandle> {
+  async resumeAgent(
+    agentId: string,
+    options: { cwd: string; storeCwd?: string; apiKey: string; model?: ModelSelection }
+  ): Promise<CursorAgentHandle> {
+    this.lastResumeOptions = options;
     const agent = this.agents.get(agentId);
     if (!agent) {
       throw new Error(`unknown agent ${agentId}`);
     }
+    const info = this.agentInfos.get(agentId);
+    const storeCwd = options.storeCwd ?? options.cwd;
+    if (info?.cwd !== storeCwd) {
+      throw new Error(`unknown agent ${agentId} in ${storeCwd}`);
+    }
     return agent;
   }
 
-  async listAgents(): Promise<{ items: CursorAgentInfo[]; nextCursor?: string }> {
+  async listAgents(options: { cwd: string }): Promise<{ items: CursorAgentInfo[]; nextCursor?: string }> {
+    this.listAgentCwds.push(options.cwd);
     return {
-      items: [...this.agentInfos.values()],
+      items: [...this.agentInfos.values()].filter((info) => info.cwd === options.cwd),
     };
   }
 
-  async getAgent(agentId: string): Promise<CursorAgentInfo> {
+  async getAgent(agentId: string, options: { cwd: string; apiKey?: string }): Promise<CursorAgentInfo> {
+    this.lastGetOptions = options;
     const info = this.agentInfos.get(agentId);
     if (!info) {
       throw new Error(`unknown agent ${agentId}`);
     }
+    if (info.cwd !== options.cwd) {
+      throw new Error(`unknown agent ${agentId} in ${options.cwd}`);
+    }
     return info;
   }
 
-  async listMessages(agentId: string): Promise<CursorAgentMessage[]> {
+  async listMessages(
+    agentId: string,
+    options: { cwd: string; limit?: number; offset?: number }
+  ): Promise<CursorAgentMessage[]> {
+    const info = this.agentInfos.get(agentId);
+    if (info?.cwd !== options.cwd) {
+      throw new Error(`unknown messages ${agentId} in ${options.cwd}`);
+    }
     return this.messages.get(agentId) ?? [];
   }
 
-  async listRuns(agentId: string): Promise<{ items: CursorRunInfo[]; nextCursor?: string }> {
+  async listRuns(
+    agentId: string,
+    options: { cwd: string; limit?: number; cursor?: string }
+  ): Promise<{ items: CursorRunInfo[]; nextCursor?: string }> {
+    const info = this.agentInfos.get(agentId);
+    if (info?.cwd !== options.cwd) {
+      throw new Error(`unknown runs ${agentId} in ${options.cwd}`);
+    }
     return {
       items: this.runInfos.get(agentId) ?? [],
     };
@@ -281,6 +321,175 @@ describe('CursorAppServer', () => {
     expect(agentItems).toHaveLength(1);
     expect(agentItems?.[0]?.text).toBe('Done from stream');
     expect(toolItems?.[0]?.tool).toBe('read');
+  });
+
+  it('passes Cursor ask mode as read-only prompt intent without changing the visible user turn', async () => {
+    const driver = new MockDriver();
+    const server = new CursorAppServer({
+      runtime: 'local',
+      cwd: '/workspace/app',
+      apiKey: 'cursor-key',
+      defaultModel: 'cursor-small',
+      driver,
+    });
+
+    const created = await server.request('thread/start', {});
+    const thread = created.thread as { id: string };
+    await server.request('turn/start', {
+      threadId: thread.id,
+      input: [{ type: 'text', text: 'What does this repo do?' }],
+      collaborationMode: {
+        mode: 'ask',
+      },
+    });
+
+    const sentMessage = driver.agents.get(thread.id)?.sent[0]?.message;
+    expect(typeof sentMessage === 'string' ? sentMessage : sentMessage?.text).toContain(
+      'Cursor mode: Ask.'
+    );
+
+    const read = await server.request('thread/read', { threadId: thread.id });
+    const readThread = read.thread as {
+      turns: Array<{ items: Array<{ type: string; content?: Array<{ text?: string }> }> }>;
+    };
+    expect(readThread.turns[0]?.items[0]?.content?.[0]?.text).toBe('What does this repo do?');
+  });
+
+  it('lists live Cursor threads from their requested workspace', async () => {
+    const driver = new MockDriver();
+    const server = new CursorAppServer({
+      runtime: 'local',
+      cwd: '/workspace/clawdex-mobile',
+      apiKey: 'cursor-key',
+      defaultModel: 'cursor-small',
+      driver,
+    });
+
+    await server.request('thread/start', {
+      cwd: '/workspace/launchkit',
+    });
+    const listed = await server.request('thread/list', {
+      limit: 20,
+    });
+
+    expect(driver.listAgentCwds).toEqual([
+      '/workspace/clawdex-mobile',
+      '/workspace/launchkit',
+    ]);
+    expect((listed.data as Array<{ cwd: string }>).map((thread) => thread.cwd)).toEqual([
+      '/workspace/launchkit',
+    ]);
+  });
+
+  it('uses Cursor transcript folders to reclassify agents stored under the bridge cwd', async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), 'cursor-workspace-map-'));
+    const clawdexCwd = join(tempDir, 'serious-projects', 'clawdex-mobile');
+    const launchkitCwd = join(tempDir, 'serious-projects', 'launchkit');
+    const projectsDir = join(tempDir, '.cursor', 'projects');
+    const agentId = 'cursor-agent-launchkit';
+
+    await mkdir(launchkitCwd, { recursive: true });
+    await mkdir(clawdexCwd, { recursive: true });
+    await mkdir(
+      join(
+        projectsDir,
+        cursorProjectDirName(launchkitCwd),
+        'agent-transcripts',
+        agentId
+      ),
+      { recursive: true }
+    );
+    await writeFile(
+      join(
+        projectsDir,
+        cursorProjectDirName(launchkitCwd),
+        'agent-transcripts',
+        agentId,
+        `${agentId}.jsonl`
+      ),
+      '{}\n'
+    );
+
+    try {
+      const driver = new MockDriver();
+      const now = Date.UTC(2026, 4, 1, 10, 0, 0);
+      const agent = new MockAgent(agentId, (id) =>
+        new MockRun(id, driver.nextRunResult.id, driver.nextRunMessages, driver.nextRunResult)
+      );
+      driver.agents.set(agentId, agent);
+      driver.agentInfos.set(agentId, {
+        agentId,
+        name: 'LaunchKit visuals',
+        summary: '',
+        lastModified: now,
+        createdAt: now,
+        status: 'finished',
+        runtime: 'local',
+        cwd: clawdexCwd,
+      });
+      const server = new CursorAppServer({
+        runtime: 'local',
+        cwd: clawdexCwd,
+        apiKey: 'cursor-key',
+        defaultModel: 'cursor-small',
+        cursorProjectsDir: projectsDir,
+        driver,
+      });
+
+      const listed = await server.request('thread/list', { limit: 20 });
+      expect((listed.data as Array<{ id: string; cwd: string }>)).toMatchObject([
+        { id: agentId, cwd: launchkitCwd },
+      ]);
+
+      const read = await server.request('thread/read', {
+        threadId: agentId,
+        cwd: launchkitCwd,
+      });
+      expect(driver.lastGetOptions?.cwd).toBe(clawdexCwd);
+      expect((read.thread as { cwd: string }).cwd).toBe(launchkitCwd);
+
+      await server.request('turn/start', {
+        threadId: agentId,
+        cwd: launchkitCwd,
+        input: [{ type: 'text', text: 'Continue in LaunchKit' }],
+      });
+      expect(driver.lastResumeOptions).toMatchObject({
+        cwd: launchkitCwd,
+        storeCwd: clawdexCwd,
+      });
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('reads historical Cursor threads from the supplied workspace', async () => {
+    const driver = new MockDriver();
+    const now = Date.UTC(2026, 4, 1, 10, 0, 0);
+    driver.agentInfos.set('cursor-agent-launchkit', {
+      agentId: 'cursor-agent-launchkit',
+      name: 'LaunchKit visuals',
+      summary: '',
+      lastModified: now,
+      createdAt: now,
+      status: 'finished',
+      runtime: 'local',
+      cwd: '/workspace/launchkit',
+    });
+    const server = new CursorAppServer({
+      runtime: 'local',
+      cwd: '/workspace/clawdex-mobile',
+      apiKey: 'cursor-key',
+      defaultModel: 'cursor-small',
+      driver,
+    });
+
+    const read = await server.request('thread/read', {
+      threadId: 'cursor-agent-launchkit',
+      cwd: '/workspace/launchkit',
+    });
+
+    expect(driver.lastGetOptions?.cwd).toBe('/workspace/launchkit');
+    expect((read.thread as { cwd: string }).cwd).toBe('/workspace/launchkit');
   });
 
   it('keeps local image entries on the persisted Cursor user turn', async () => {
@@ -729,6 +938,39 @@ describe('CursorAppServer', () => {
       'cursor-small',
       'cursor-small',
     ]);
+  });
+
+  it('resumes follow-up Cursor turns from the supplied workspace', async () => {
+    const driver = new MockDriver();
+    const agent = new MockAgent('cursor-agent-launchkit', (id) =>
+      new MockRun(id, driver.nextRunResult.id, driver.nextRunMessages, driver.nextRunResult)
+    );
+    driver.agents.set(agent.agentId, agent);
+    driver.agentInfos.set(agent.agentId, {
+      agentId: agent.agentId,
+      name: 'LaunchKit follow-up',
+      summary: '',
+      lastModified: Date.UTC(2026, 4, 1, 10, 0, 0),
+      createdAt: Date.UTC(2026, 4, 1, 10, 0, 0),
+      status: 'finished',
+      runtime: 'local',
+      cwd: '/workspace/launchkit',
+    });
+    const server = new CursorAppServer({
+      runtime: 'local',
+      cwd: '/workspace/clawdex-mobile',
+      apiKey: 'cursor-key',
+      defaultModel: 'cursor-small',
+      driver,
+    });
+
+    await server.request('turn/start', {
+      threadId: agent.agentId,
+      cwd: '/workspace/launchkit',
+      input: [{ type: 'text', text: 'Continue in LaunchKit' }],
+    });
+
+    expect(driver.lastResumeOptions?.cwd).toBe('/workspace/launchkit');
   });
 
   it('recovers the thread model from persisted Cursor runs when resuming', async () => {

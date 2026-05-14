@@ -23,7 +23,9 @@ const unsupportedInputSchema = z.object({
 const turnParamsSchema = z.object({
   threadId: z.string().min(1),
   input: z.array(z.unknown()).min(1),
+  cwd: z.string().optional().nullable(),
   model: z.string().optional().nullable(),
+  collaborationMode: z.unknown().optional().nullable(),
 });
 
 const threadStartParamsSchema = z.object({
@@ -35,6 +37,7 @@ const threadStartParamsSchema = z.object({
 
 const threadIdParamsSchema = z.object({
   threadId: z.string().min(1),
+  cwd: z.string().optional().nullable(),
 });
 
 const listParamsSchema = z.object({
@@ -53,11 +56,16 @@ export interface ParsedTurnStartParams {
   threadId: string;
   prompt: string;
   imagePaths: string[];
+  cwd: string | null;
   model: string | null;
+  collaborationMode: CursorCollaborationMode | null;
 }
+
+export type CursorCollaborationMode = 'default' | 'plan' | 'ask';
 
 export interface ParsedThreadIdParams {
   threadId: string;
+  cwd: string | null;
 }
 
 export interface ParsedListParams {
@@ -82,14 +90,36 @@ export function parseTurnStartParams(value: unknown): ParsedTurnStartParams {
     threadId: parsed.threadId.trim(),
     prompt: input.prompt,
     imagePaths: input.imagePaths,
+    cwd: normalizeNullableString(parsed.cwd),
     model: normalizeNullableString(parsed.model),
+    collaborationMode: normalizeCollaborationMode(parsed.collaborationMode),
   };
+}
+
+function normalizeCollaborationMode(value: unknown): CursorCollaborationMode | null {
+  const rawMode =
+    typeof value === 'string'
+      ? value
+      : value && typeof value === 'object' && 'mode' in value
+        ? (value as { mode?: unknown }).mode
+        : null;
+
+  if (typeof rawMode !== 'string') {
+    return null;
+  }
+
+  const normalized = rawMode.trim().toLowerCase();
+  if (normalized === 'default' || normalized === 'plan' || normalized === 'ask') {
+    return normalized;
+  }
+  return null;
 }
 
 export function parseThreadIdParams(value: unknown): ParsedThreadIdParams {
   const parsed = threadIdParamsSchema.parse(value ?? {});
   return {
     threadId: parsed.threadId.trim(),
+    cwd: normalizeNullableString(parsed.cwd),
   };
 }
 

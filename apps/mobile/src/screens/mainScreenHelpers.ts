@@ -1583,7 +1583,13 @@ export function parseChatPlanSnapshots(raw: string): Record<string, ActivePlanSt
 }
 
 export function formatCollaborationModeLabel(mode: CollaborationMode): string {
-  return mode === 'plan' ? 'Plan mode' : 'Default mode';
+  if (mode === 'plan') {
+    return 'Plan mode';
+  }
+  if (mode === 'ask') {
+    return 'Ask mode';
+  }
+  return 'Default mode';
 }
 
 export function isBridgeConnectionErrorMessage(value: string | null | undefined): boolean {

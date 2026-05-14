@@ -11,6 +11,7 @@ yarn-error.log*
 **/dist/
 *.tsbuildinfo
 **/target/
+**/.build/
 
 # Expo / React Native
 .expo/
