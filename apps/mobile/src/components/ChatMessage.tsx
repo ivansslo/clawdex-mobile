@@ -1,5 +1,5 @@
 import { Ionicons } from '@expo/vector-icons';
-import { Fragment, memo, useCallback, useEffect, useMemo, useState, type ReactElement } from 'react';
+import { Fragment, memo, useCallback, useMemo, useState, type ReactElement } from 'react';
 import {
   Image,
   Modal,
@@ -13,14 +13,8 @@ import {
   useWindowDimensions,
   View,
 } from 'react-native';
-import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Markdown, { type RenderRules } from 'react-native-markdown-display';
-import Animated, {
-  clamp,
-  useAnimatedStyle,
-  useSharedValue,
-  withTiming,
-} from 'react-native-reanimated';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import type { ChatEngine, ChatMessage as ApiChatMessage } from '../api/types';
 import { extractLocalPreviewUrls } from '../browserPreview';
@@ -47,6 +41,8 @@ interface ToolActivityGroupProps {
   bridgeToken?: string | null;
   /** While the server reports an in-flight turn, surface live affordances (badge, border). */
   liveTurnActive?: boolean;
+  /** Show a subtle status cue without exposing full tool input/output. */
+  compact?: boolean;
 }
 
 interface TimelineEntry {
@@ -581,6 +577,7 @@ export const ToolActivityGroup = memo(function ToolActivityGroupComponent({
   bridgeUrl = null,
   bridgeToken = null,
   liveTurnActive = false,
+  compact = false,
 }: ToolActivityGroupProps) {
   const theme = useAppTheme();
   const styles = useMemo(() => createStyles(theme), [theme]);
@@ -639,6 +636,31 @@ export const ToolActivityGroup = memo(function ToolActivityGroupComponent({
     : entries.slice(0, TOOL_GROUP_COLLAPSED_PREVIEW_COUNT);
   const hiddenCount = Math.max(entries.length - previewEntries.length, 0);
   const summary = summarizeToolGroup(entries.map((entry) => entry.title));
+  const compactVisual = toTimelineVisual(entries[0]?.title ?? summary);
+
+  if (compact) {
+    return (
+      <View style={[styles.messageWrapper, styles.messageWrapperAssistant]}>
+        <View style={[styles.toolCueRow, liveTurnActive && styles.toolCueRowLive]}>
+          <Ionicons
+            name={compactVisual.icon}
+            size={13}
+            color={
+              compactVisual.isError
+                ? theme.colors.statusError
+                : liveTurnActive
+                  ? theme.colors.statusRunning
+                  : theme.colors.textMuted
+            }
+            style={styles.toolCueIcon}
+          />
+          <Text style={styles.toolCueText} numberOfLines={1}>
+            {formatCompactToolSummary(summary, liveTurnActive)}
+          </Text>
+        </View>
+      </View>
+    );
+  }
 
   const listInner = (
     <>
@@ -1510,52 +1532,38 @@ const createStyles = (theme: AppTheme) => {
   },
   imageViewerModalRoot: {
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.94)',
-    paddingHorizontal: theme.spacing.lg,
-    paddingTop: theme.spacing.xxl,
-    paddingBottom: theme.spacing.xl,
+    backgroundColor: '#000000',
   },
-  imageViewerHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: theme.spacing.sm,
-  },
-  imageViewerHintChip: {
-    borderRadius: theme.radius.full,
-    backgroundColor: 'rgba(255, 255, 255, 0.08)',
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(255, 255, 255, 0.14)',
-    paddingHorizontal: theme.spacing.md,
-    paddingVertical: 6,
-  },
-  imageViewerHintText: {
-    ...theme.typography.caption,
-    color: 'rgba(255, 255, 255, 0.84)',
-    fontSize: 11,
-    fontWeight: '600',
+  imageViewerCloseButtonFloating: {
+    position: 'absolute',
+    zIndex: 3,
   },
   imageViewerCloseButton: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+    width: 48,
+    height: 48,
+    borderRadius: 24,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    backgroundColor: 'rgba(255, 255, 255, 0.16)',
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(255, 255, 255, 0.16)',
+    borderColor: 'rgba(255, 255, 255, 0.24)',
   },
   imageViewerCloseButtonPressed: {
     opacity: 0.84,
   },
-  imageViewerStage: {
+  imageViewerScroll: {
     flex: 1,
+  },
+  imageViewerScrollContent: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  imageViewerStage: {
     alignItems: 'center',
     justifyContent: 'center',
   },
   imageViewerImage: {
-    borderRadius: theme.radius.md,
-    backgroundColor: theme.colors.bgInput,
+    backgroundColor: '#000000',
   },
   timelineCardStack: {
     gap: theme.spacing.sm,
@@ -1814,6 +1822,33 @@ const createStyles = (theme: AppTheme) => {
   },
   toolGroupCardPressed: {
     opacity: 0.84,
+  },
+  toolCueRow: {
+    alignSelf: 'flex-start',
+    maxWidth: '88%',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+    borderRadius: theme.radius.full,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: theme.colors.borderLight,
+    backgroundColor: theme.colors.bgItem,
+    paddingHorizontal: theme.spacing.md,
+    paddingVertical: 6,
+  },
+  toolCueRowLive: {
+    borderColor: theme.colors.borderHighlight,
+    backgroundColor: theme.colors.bgInput,
+  },
+  toolCueIcon: {
+    width: 16,
+  },
+  toolCueText: {
+    ...theme.typography.caption,
+    color: theme.colors.textMuted,
+    fontWeight: '600',
+    lineHeight: 16,
+    flexShrink: 1,
   },
   toolGroupHeader: {
     flexDirection: 'row',
@@ -2127,181 +2162,15 @@ function MarkdownImage({
   const styles = useMemo(() => createStyles(theme), [theme]);
   const [aspectRatio, setAspectRatio] = useState<number | null>(null);
   const [viewerVisible, setViewerVisible] = useState(false);
+  const safeAreaInsets = useSafeAreaInsets();
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
-  const modalImageWidth = Math.max(windowWidth - theme.spacing.xl * 2, 160);
-  const modalImageHeight = Math.max(windowHeight - theme.spacing.xxl * 4, 220);
+  const modalImageWidth = Math.max(windowWidth, 160);
+  const closeButtonTop = Math.max(safeAreaInsets.top + theme.spacing.sm, 64);
+  const closeButtonRight = Math.max(safeAreaInsets.right + theme.spacing.md, theme.spacing.md);
+  const modalImageHeight = Math.max(windowHeight, 220);
   const viewerImageFrame = useMemo(
     () => resolveContainedImageFrame(modalImageWidth, modalImageHeight, aspectRatio),
     [aspectRatio, modalImageHeight, modalImageWidth]
-  );
-  const scale = useSharedValue(1);
-  const scaleOffset = useSharedValue(1);
-  const translateX = useSharedValue(0);
-  const translateY = useSharedValue(0);
-  const translateOffsetX = useSharedValue(0);
-  const translateOffsetY = useSharedValue(0);
-
-  useEffect(() => {
-    if (!viewerVisible) {
-      scale.value = 1;
-      scaleOffset.value = 1;
-      translateX.value = 0;
-      translateY.value = 0;
-      translateOffsetX.value = 0;
-      translateOffsetY.value = 0;
-    }
-  }, [
-    scale,
-    scaleOffset,
-    translateOffsetX,
-    translateOffsetY,
-    translateX,
-    translateY,
-    viewerVisible,
-  ]);
-
-  const modalImageAnimatedStyle = useAnimatedStyle(() => ({
-    transform: [
-      { translateX: translateX.value },
-      { translateY: translateY.value },
-      { scale: scale.value },
-    ],
-  }));
-
-  const pinchGesture = useMemo(
-    () =>
-      Gesture.Pinch()
-        .enabled(viewerVisible)
-        .onStart(() => {
-          scaleOffset.value = scale.value;
-        })
-        .onUpdate((event) => {
-          const nextScale = clamp(scaleOffset.value * event.scale, 1, 4);
-          const maxX = Math.max(
-            (viewerImageFrame.width * nextScale - viewerImageFrame.width) / 2,
-            0
-          );
-          const maxY = Math.max(
-            (viewerImageFrame.height * nextScale - viewerImageFrame.height) / 2,
-            0
-          );
-          scale.value = nextScale;
-          translateX.value = clamp(translateX.value, -maxX, maxX);
-          translateY.value = clamp(translateY.value, -maxY, maxY);
-        })
-        .onEnd(() => {
-          if (scale.value <= 1.01) {
-            scale.value = withTiming(1);
-            translateX.value = withTiming(0);
-            translateY.value = withTiming(0);
-            scaleOffset.value = 1;
-            translateOffsetX.value = 0;
-            translateOffsetY.value = 0;
-            return;
-          }
-
-          scaleOffset.value = scale.value;
-          translateOffsetX.value = translateX.value;
-          translateOffsetY.value = translateY.value;
-        }),
-    [
-      scale,
-      scaleOffset,
-      translateOffsetX,
-      translateOffsetY,
-      translateX,
-      translateY,
-      viewerImageFrame.height,
-      viewerImageFrame.width,
-      viewerVisible,
-    ]
-  );
-
-  const panGesture = useMemo(
-    () =>
-      Gesture.Pan()
-        .enabled(viewerVisible)
-        .minDistance(2)
-        .onStart(() => {
-          translateOffsetX.value = translateX.value;
-          translateOffsetY.value = translateY.value;
-        })
-        .onUpdate((event) => {
-          if (scale.value <= 1.01) {
-            translateX.value = 0;
-            translateY.value = 0;
-            return;
-          }
-
-          const maxX = Math.max(
-            (viewerImageFrame.width * scale.value - viewerImageFrame.width) / 2,
-            0
-          );
-          const maxY = Math.max(
-            (viewerImageFrame.height * scale.value - viewerImageFrame.height) / 2,
-            0
-          );
-          translateX.value = clamp(translateOffsetX.value + event.translationX, -maxX, maxX);
-          translateY.value = clamp(translateOffsetY.value + event.translationY, -maxY, maxY);
-        })
-        .onEnd(() => {
-          translateOffsetX.value = translateX.value;
-          translateOffsetY.value = translateY.value;
-        }),
-    [
-      scale,
-      translateOffsetX,
-      translateOffsetY,
-      translateX,
-      translateY,
-      viewerImageFrame.height,
-      viewerImageFrame.width,
-      viewerVisible,
-    ]
-  );
-
-  const doubleTapGesture = useMemo(
-    () =>
-      Gesture.Tap()
-        .enabled(viewerVisible)
-        .numberOfTaps(2)
-        .maxDuration(250)
-        .onEnd((_event, success) => {
-          if (!success) {
-            return;
-          }
-
-          if (scale.value > 1.01) {
-            scale.value = withTiming(1);
-            translateX.value = withTiming(0);
-            translateY.value = withTiming(0);
-            scaleOffset.value = 1;
-            translateOffsetX.value = 0;
-            translateOffsetY.value = 0;
-            return;
-          }
-
-          scale.value = withTiming(2);
-          scaleOffset.value = 2;
-          translateX.value = withTiming(0);
-          translateY.value = withTiming(0);
-          translateOffsetX.value = 0;
-          translateOffsetY.value = 0;
-        }),
-    [
-      scale,
-      scaleOffset,
-      translateOffsetX,
-      translateOffsetY,
-      translateX,
-      translateY,
-      viewerVisible,
-    ]
-  );
-
-  const viewerGesture = useMemo(
-    () => Gesture.Exclusive(doubleTapGesture, Gesture.Simultaneous(pinchGesture, panGesture)),
-    [doubleTapGesture, panGesture, pinchGesture]
   );
 
   return (
@@ -2353,38 +2222,43 @@ function MarkdownImage({
         animationType="fade"
         presentationStyle="overFullScreen"
         statusBarTranslucent
+        hardwareAccelerated
+        supportedOrientations={['portrait', 'landscape']}
         onRequestClose={() => setViewerVisible(false)}
       >
-        <View style={styles.imageViewerModalRoot}>
+        <View
+          style={styles.imageViewerModalRoot}
+          accessibilityViewIsModal
+        >
           <Pressable
             testID="chat-image-fullscreen-backdrop"
             style={StyleSheet.absoluteFill}
             onPress={() => setViewerVisible(false)}
           />
-          <View style={styles.imageViewerHeader}>
-            <View style={styles.imageViewerHintChip}>
-              <Text style={styles.imageViewerHintText}>Pinch or double tap to zoom</Text>
-            </View>
-            <Pressable
-              onPress={() => setViewerVisible(false)}
-              hitSlop={8}
-              style={({ pressed }) => [
-                styles.imageViewerCloseButton,
-                pressed && styles.imageViewerCloseButtonPressed,
+          <ScrollView
+            style={styles.imageViewerScroll}
+            contentContainerStyle={[
+              styles.imageViewerScrollContent,
+              { width: windowWidth, minHeight: windowHeight },
+            ]}
+            centerContent
+            bouncesZoom
+            maximumZoomScale={4}
+            minimumZoomScale={1}
+            showsHorizontalScrollIndicator={false}
+            showsVerticalScrollIndicator={false}
+            scrollEventThrottle={16}
+          >
+            <View
+              style={[
+                styles.imageViewerStage,
+                { width: windowWidth, minHeight: windowHeight },
               ]}
-              accessibilityRole="button"
-              accessibilityLabel="Close full-screen image"
             >
-              <Ionicons name="close" size={20} color={theme.colors.textPrimary} />
-            </Pressable>
-          </View>
-          <View style={styles.imageViewerStage}>
-            <GestureDetector gesture={viewerGesture}>
-              <Animated.Image
+              <Image
                 source={source}
                 style={[
                   styles.imageViewerImage,
-                  modalImageAnimatedStyle,
                   {
                     width: viewerImageFrame.width,
                     height: viewerImageFrame.height,
@@ -2394,8 +2268,26 @@ function MarkdownImage({
                 accessible={Boolean(accessibilityLabel)}
                 accessibilityLabel={accessibilityLabel}
               />
-            </GestureDetector>
-          </View>
+            </View>
+          </ScrollView>
+          <Pressable
+            testID="chat-image-fullscreen-close"
+            onPress={() => setViewerVisible(false)}
+            hitSlop={12}
+            style={({ pressed }) => [
+              styles.imageViewerCloseButtonFloating,
+              {
+                top: closeButtonTop,
+                right: closeButtonRight,
+              },
+              styles.imageViewerCloseButton,
+              pressed && styles.imageViewerCloseButtonPressed,
+            ]}
+            accessibilityRole="button"
+            accessibilityLabel="Close full-screen image"
+          >
+            <Ionicons name="close" size={28} color="#FFFFFF" />
+          </Pressable>
         </View>
       </Modal>
     </>
@@ -2769,6 +2661,32 @@ function summarizeToolGroup(titles: string[]): string {
     return `${String(titles.length)} exploration${titles.length === 1 ? '' : 's'}`;
   }
   return `${String(titles.length)} tool step${titles.length === 1 ? '' : 's'}`;
+}
+
+function formatCompactToolSummary(summary: string, liveTurnActive: boolean): string {
+  if (!liveTurnActive) {
+    return summary;
+  }
+
+  if (/^\d+\s+command/i.test(summary)) {
+    return `Running ${summary}`;
+  }
+  if (/^\d+\s+tool call/i.test(summary)) {
+    return `Calling ${summary}`;
+  }
+  if (/^\d+\s+web search/i.test(summary)) {
+    return `Searching web`;
+  }
+  if (/^\d+\s+file read/i.test(summary)) {
+    return `Reading files`;
+  }
+  if (/^\d+\s+folder listing/i.test(summary)) {
+    return `Listing folders`;
+  }
+  if (/^\d+\s+exploration/i.test(summary)) {
+    return `Exploring`;
+  }
+  return `Running ${summary}`;
 }
 
 function toCursorActivityVisual(

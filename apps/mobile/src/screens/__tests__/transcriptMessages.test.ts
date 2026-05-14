@@ -52,6 +52,20 @@ describe('getVisibleTranscriptMessages', () => {
     ]);
   });
 
+  it('keeps tool cue rows when detailed tool calls are disabled', () => {
+    const messages = [
+      message('u1', 'user', 'Investigate this bug'),
+      message('t1', 'system', '• Ran `npm test`', { systemKind: 'tool' }),
+      message('a1', 'assistant', 'Found the issue.'),
+    ];
+
+    expect(getVisibleTranscriptMessages(messages, false).map((entry) => entry.id)).toEqual([
+      'u1',
+      't1',
+      'a1',
+    ]);
+  });
+
   it('keeps sub-agent system rows visible when tool calls are disabled', () => {
     const messages = [
       message('u1', 'user', 'Review this repository'),
@@ -100,7 +114,7 @@ describe('getVisibleTranscriptMessages', () => {
     ]);
   });
 
-  it('keeps only the last message in a consecutive assistant run', () => {
+  it('keeps every message in a consecutive assistant run', () => {
     const messages = [
       message('u1', 'user', 'Answer this'),
       message('a1', 'assistant', 'Working...'),
@@ -109,6 +123,7 @@ describe('getVisibleTranscriptMessages', () => {
 
     expect(getVisibleTranscriptMessages(messages, false).map((entry) => entry.id)).toEqual([
       'u1',
+      'a1',
       'a2',
     ]);
   });
@@ -164,6 +179,7 @@ describe('buildTranscriptDisplayItems', () => {
         kind: 'toolGroup',
         id: 'tool-group-t1-t2',
         messages: [messages[1], messages[2]],
+        compact: false,
       },
       {
         kind: 'message',
@@ -187,6 +203,7 @@ describe('buildTranscriptDisplayItems', () => {
         kind: 'toolGroup',
         id: 'tool-group-t1-t1',
         messages: [messages[0]],
+        compact: false,
       },
       {
         kind: 'message',
@@ -197,6 +214,7 @@ describe('buildTranscriptDisplayItems', () => {
         kind: 'toolGroup',
         id: 'tool-group-t2-t2',
         messages: [messages[2]],
+        compact: false,
       },
     ]);
   });
@@ -231,6 +249,7 @@ describe('buildTranscriptDisplayItems', () => {
         kind: 'toolGroup',
         id: 'tool-group-t1-t1',
         messages: [messages[1]],
+        compact: false,
       },
       {
         kind: 'message',
@@ -265,5 +284,32 @@ describe('buildTranscriptDisplayItems', () => {
       .map((item) => item.renderKey);
 
     expect(insertedUserKeys).toEqual(baseUserKeys);
+  });
+
+  it('marks tool groups compact when detailed tool calls are disabled', () => {
+    const messages = [
+      message('u1', 'user', 'Audit this'),
+      message('t1', 'system', '• Ran `pwd`', { systemKind: 'tool' }),
+      message('a1', 'assistant', 'Done.'),
+    ];
+
+    expect(buildTranscriptDisplayItems(messages, false)).toEqual([
+      {
+        kind: 'message',
+        message: messages[0],
+        renderKey: 'user-1-Audit this',
+      },
+      {
+        kind: 'toolGroup',
+        id: 'tool-group-t1-t1',
+        messages: [messages[1]],
+        compact: true,
+      },
+      {
+        kind: 'message',
+        message: messages[2],
+        renderKey: 'a1',
+      },
+    ]);
   });
 });

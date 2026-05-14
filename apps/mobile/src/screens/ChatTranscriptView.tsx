@@ -116,8 +116,8 @@ export const ChatTranscriptView = memo(function ChatTranscriptView({
     [visibleMessages, visibleStartIndex]
   );
   const displayMessages = useMemo(
-    () => buildTranscriptDisplayItems(paginatedMessages).reverse(),
-    [paginatedMessages]
+    () => buildTranscriptDisplayItems(paginatedMessages, showToolCalls).reverse(),
+    [paginatedMessages, showToolCalls]
   );
   const inlineChoiceSet = useMemo(
     () => (inlineChoicesEnabled ? findInlineChoiceSet(paginatedMessages) : null),
@@ -237,6 +237,7 @@ export const ChatTranscriptView = memo(function ChatTranscriptView({
               bridgeUrl={bridgeUrl}
               bridgeToken={bridgeToken}
               liveTurnActive={liveTurnActive}
+              compact={item.compact}
             />
           </View>
         );

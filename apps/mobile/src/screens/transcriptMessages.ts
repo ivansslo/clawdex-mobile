@@ -4,6 +4,7 @@ export interface ToolTranscriptGroup {
   kind: 'toolGroup';
   id: string;
   messages: ChatMessage[];
+  compact: boolean;
 }
 
 export type TranscriptDisplayItem =
@@ -26,6 +27,7 @@ export function getVisibleTranscriptMessages(
     if (
       !showToolCalls &&
       msg.role === 'system' &&
+      msg.systemKind !== 'tool' &&
       msg.systemKind !== 'subAgent' &&
       msg.systemKind !== 'reasoning' &&
       msg.systemKind !== 'compaction'
@@ -47,29 +49,12 @@ export function getVisibleTranscriptMessages(
     return true;
   });
 
-  return filtered.filter((msg, index) => {
-    if (msg.role !== 'assistant') {
-      return true;
-    }
-
-    const next = filtered[index + 1];
-    if (!next || next.role !== 'assistant') {
-      return true;
-    }
-
-    return (
-      assistantMessageHasInlineMedia(msg.content) ||
-      assistantMessageHasInlineMedia(next.content)
-    );
-  });
-}
-
-function assistantMessageHasInlineMedia(content: string): boolean {
-  return /^\[(?:image|local image):\s*.+?\]$/im.test(content);
+  return filtered;
 }
 
 export function buildTranscriptDisplayItems(
-  messages: ChatMessage[]
+  messages: ChatMessage[],
+  showToolCalls = true
 ): TranscriptDisplayItem[] {
   const items: TranscriptDisplayItem[] = [];
   let toolBuffer: ChatMessage[] = [];
@@ -84,6 +69,7 @@ export function buildTranscriptDisplayItems(
       kind: 'toolGroup',
       id: `tool-group-${toolBuffer[0]?.id ?? 'start'}-${toolBuffer[toolBuffer.length - 1]?.id ?? 'end'}`,
       messages: [...toolBuffer],
+      compact: !showToolCalls,
     });
 
     toolBuffer = [];

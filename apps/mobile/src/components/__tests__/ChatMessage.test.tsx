@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import { Modal, ScrollView, StyleSheet, Text } from 'react-native';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
 import renderer, {
   act,
   type ReactTestInstance,
@@ -76,9 +77,16 @@ describe('ChatMessage image viewer', () => {
     let rendered: ReactTestRenderer | undefined;
     act(() => {
       rendered = renderer.create(
-        <AppThemeProvider theme={theme}>
-          <ChatMessage message={message} />
-        </AppThemeProvider>
+        <SafeAreaProvider
+          initialMetrics={{
+            frame: { x: 0, y: 0, width: 390, height: 844 },
+            insets: { top: 59, right: 0, bottom: 34, left: 0 },
+          }}
+        >
+          <AppThemeProvider theme={theme}>
+            <ChatMessage message={message} />
+          </AppThemeProvider>
+        </SafeAreaProvider>
       );
     });
     const tree = expectValue(rendered);
