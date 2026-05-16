@@ -1250,6 +1250,8 @@ const createStyles = (theme: AppTheme) => {
     width: 66,
     height: 66,
     borderRadius: 22,
+    borderColor: theme.isDark ? 'rgba(255,255,255,0.18)' : 'rgba(15, 23, 42, 0.16)',
+    backgroundColor: theme.isDark ? 'rgba(15, 23, 42, 0.96)' : '#111827',
     transform: [{ rotate: '-8deg' }],
   },
   introHeroEngineCardOpenCode: {

@@ -27,6 +27,7 @@ export function ChatEngineIcon({ engine, size = 18, style }: ChatEngineIconProps
       accessibilityRole="image"
       style={[
         styles.frame,
+        resolvedEngine === 'cursor' && styles.cursorFrame,
         {
           width: size,
           height: size,
@@ -50,5 +51,8 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     overflow: 'hidden',
     flexShrink: 0,
+  },
+  cursorFrame: {
+    backgroundColor: '#111827',
   },
 });
