@@ -850,11 +850,24 @@ export function OnboardingScreen({
             transparent
             onRequestClose={closeScanner}
           >
-            <View style={styles.scannerModalRoot}>
-              <View style={styles.scannerSheet}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Close QR scanner"
+              onPress={closeScanner}
+              style={styles.scannerModalRoot}
+            >
+              <Pressable
+                accessibilityRole="none"
+                onPress={(event) => {
+                  event.stopPropagation();
+                }}
+                style={styles.scannerSheet}
+              >
                 <View style={styles.scannerHeader}>
                   <Text style={styles.scannerTitle}>Scan Pairing QR</Text>
                   <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel="Close QR scanner"
                     onPress={closeScanner}
                     hitSlop={8}
                     style={({ pressed }) => [
@@ -884,8 +897,19 @@ export function OnboardingScreen({
                   Scan the pairing QR to fill the URL and token.
                 </Text>
                 {scannerError ? <Text style={styles.errorText}>{scannerError}</Text> : null}
-              </View>
-            </View>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="Cancel QR scan"
+                  onPress={closeScanner}
+                  style={({ pressed }) => [
+                    styles.scannerCancelButton,
+                    pressed && styles.scannerCancelButtonPressed,
+                  ]}
+                >
+                  <Text style={styles.scannerCancelButtonText}>Cancel</Text>
+                </Pressable>
+              </Pressable>
+            </Pressable>
           </Modal>
         </KeyboardAvoidingView>
       </SafeAreaView>
@@ -1905,9 +1929,14 @@ const createStyles = (theme: AppTheme) => {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.94)',
     justifyContent: 'center',
+    alignItems: 'center',
     paddingHorizontal: theme.spacing.lg,
+    paddingVertical: theme.spacing.xl,
   },
   scannerSheet: {
+    width: '100%',
+    maxWidth: 480,
+    maxHeight: '100%',
     borderRadius: 22,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: theme.colors.borderHighlight,
@@ -1925,9 +1954,9 @@ const createStyles = (theme: AppTheme) => {
     color: theme.colors.textPrimary,
   },
   scannerCloseBtn: {
-    width: 30,
-    height: 30,
-    borderRadius: 15,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: theme.colors.borderLight,
     backgroundColor: theme.colors.bgMain,
@@ -1963,6 +1992,23 @@ const createStyles = (theme: AppTheme) => {
   scannerHintText: {
     ...theme.typography.caption,
     color: theme.colors.textMuted,
+  },
+  scannerCancelButton: {
+    minHeight: 44,
+    borderRadius: 12,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: theme.colors.borderLight,
+    backgroundColor: theme.colors.bgItem,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  scannerCancelButtonPressed: {
+    opacity: 0.78,
+  },
+  scannerCancelButtonText: {
+    ...theme.typography.body,
+    color: theme.colors.textPrimary,
+    fontWeight: '700',
   },
   });
 };
