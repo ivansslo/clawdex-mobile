@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: clawdex-mobile-bridge
+    runtime: node
+    region: singapore
+    autoDeploy: true
+    buildCommand: npm ci --include=dev && npm run build -w @codex/mac-bridge
+    startCommand: BRIDGE_HOST=0.0.0.0 BRIDGE_PORT=$PORT npm run start -w @codex/mac-bridge
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_VERSION
+        value: 22.19.0
+      - key: BRIDGE_AUTH_TOKEN
+        generateValue: true
+      - key: BRIDGE_CORS_ORIGINS
+        sync: false
+      - key: BRIDGE_ALLOW_QUERY_TOKEN_AUTH
+        value: "false"
+      - key: BRIDGE_DISABLE_TERMINAL_EXEC
+        value: "true"
