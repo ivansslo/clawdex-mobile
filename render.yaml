@@ -5,7 +5,7 @@ services:
     region: singapore
     autoDeploy: true
     buildCommand: npm ci --include=dev && npm run build -w @codex/mac-bridge
-    startCommand: BRIDGE_HOST=0.0.0.0 BRIDGE_PORT=$PORT npm run start -w @codex/mac-bridge
+    startCommand: ./scripts/render-start-tailscale-authkey.sh
     healthCheckPath: /health
     envVars:
       - key: NODE_VERSION
@@ -17,4 +17,10 @@ services:
       - key: BRIDGE_ALLOW_QUERY_TOKEN_AUTH
         value: "false"
       - key: BRIDGE_DISABLE_TERMINAL_EXEC
+        value: "true"
+      - key: TS_AUTHKEY
+        sync: false
+      - key: TS_HOSTNAME
+        value: tailsup
+      - key: TS_SERVE
         value: "true"
