@@ -80,5 +80,7 @@
     "lint": "npm run --workspaces lint",
     "test": "npm run test -w @codex/mac-bridge && npm run test -w apps/mobile && npm run test -w @codex/rust-bridge && npm run test -w @clawdex/cursor-app-server",
     "teardown": "./scripts/teardown.sh"
+    "bridge:tailscale:binary": "./scripts/start-tailscale-local-binary.sh",
+    "bridge:tailscale:binary:build": "./scripts/start-tailscale-local-binary.sh --build"
   }
 }
