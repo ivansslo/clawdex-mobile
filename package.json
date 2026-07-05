@@ -79,8 +79,11 @@
     "typecheck": "npm run --workspaces typecheck",
     "lint": "npm run --workspaces lint",
     "test": "npm run test -w @codex/mac-bridge && npm run test -w apps/mobile && npm run test -w @codex/rust-bridge && npm run test -w @clawdex/cursor-app-server",
-    "teardown": "./scripts/teardown.sh"
+    "teardown": "./scripts/teardown.sh",
     "bridge:tailscale:binary": "./scripts/start-tailscale-local-binary.sh",
-    "bridge:tailscale:binary:build": "./scripts/start-tailscale-local-binary.sh --build"
+    "bridge:tailscale:binary:build": "./scripts/start-tailscale-local-binary.sh --build",
+    "tailscale:auto": "./scripts/auto-run-tailscale-binary.sh",
+    "tailscale:auto:no-build": "./scripts/auto-run-tailscale-binary.sh --no-build",
+    "tailscale:auto:force-env": "./scripts/auto-run-tailscale-binary.sh --force-env"
   }
 }
